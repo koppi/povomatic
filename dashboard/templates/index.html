@@ -164,6 +164,8 @@ See <https://www.gnu.org/licenses/> for details.
             <div class="navstat filter" data-filter="encoding" role="button" tabindex="0" title="Show only encodes"><span class="navstat-value good" id="encoding-count">-</span><span class="navstat-label">Encoding</span></div>
             <div class="navstat"><span class="navstat-value info" id="pov-perf">-</span><span class="navstat-label">POV-Ray / frame</span><span class="navstat-sub" id="pov-minmax">-</span></div>
             <div class="navstat"><span class="navstat-value info" id="ffmpeg-perf">-</span><span class="navstat-label">FFmpeg avg</span></div>
+            <div class="navstat"><span class="navstat-value good" id="fpm">-</span><span class="navstat-label">Frames / min</span></div>
+            <div class="navstat"><span class="navstat-value info" id="overall-eta">-</span><span class="navstat-label">All done</span><span class="navstat-sub" id="overall-eta-clock">-</span></div>
         </div>
         <div class="ws-status">
             <div id="ws-indicator" class="ws-indicator"></div>
@@ -417,6 +419,21 @@ See <https://www.gnu.org/licenses/> for details.
             document.getElementById('pov-minmax').innerText =
                 `Min: ${formatDuration(data.performance.povray.min)}, Max: ${formatDuration(data.performance.povray.max)}`;
             document.getElementById('ffmpeg-perf').innerText = formatDuration(data.performance.ffmpeg.avg);
+
+            // Queue-wide frame throughput and one ETA for when every running
+            // animation is finished.
+            const tp = data.throughput || {};
+            const fpm = Number(tp.frames_per_min) || 0;
+            document.getElementById('fpm').innerText = fpm >= 10 ? Math.round(fpm) : fpm.toFixed(1);
+            const overallEta = document.getElementById('overall-eta');
+            const overallClock = document.getElementById('overall-eta-clock');
+            if (tp.overall_eta_seconds) {
+                overallEta.innerText = formatDuration(tp.overall_eta_seconds);
+                overallClock.innerText = `~${arrivalTime(tp.overall_eta_seconds)}`;
+            } else {
+                overallEta.innerText = '—';
+                overallClock.innerText = '';
+            }
 
             const completedJobsDiv = document.getElementById('completed-jobs');
             const rendersDiv = document.getElementById('active-renders');

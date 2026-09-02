@@ -131,6 +131,24 @@ def eta_seconds(parent_id, done, total):
         return None
     return (total - done) * elapsed / progressed
 
+def aggregate_frame_rate(parent_ids):
+    """Frames per second summed over every running animation, read from the
+    same progress samples the per-job ETA uses. Shared workers move between
+    animations, so the whole queue's throughput is the sum of the parts, and a
+    combined ETA divides the frames still outstanding by it."""
+    now = time.time()
+    rate = 0.0
+    with _eta_lock:
+        for parent_id in parent_ids:
+            samples = _eta_history.get(parent_id)
+            if not samples or len(samples) < 2:
+                continue
+            elapsed = now - samples[0][0]
+            progressed = samples[-1][1] - samples[0][1]
+            if elapsed > 0 and progressed > 0:
+                rate += progressed / elapsed
+    return rate
+
 _dir_cache = {}
 _dir_cache_lock = threading.Lock()
 # Job ids a caller wanted a listing for and did not get a fresh one.
@@ -412,6 +430,14 @@ def _fetch_stats(conn):
             group['preview'] = latest_frame_url(parent_id)
             group['eta_seconds'] = eta_seconds(parent_id, group['frames_rendered'], group['total_frames'])
 
+        # Queue-wide throughput and a single ETA for when everything running
+        # now is done: remaining frames over the summed frame rate.
+        frame_rate = aggregate_frame_rate(animation_groups)
+        remaining_frames = sum(max(0, g['total_frames'] - g['frames_rendered'])
+                               for g in animation_groups.values())
+        overall_eta = (remaining_frames / frame_rate
+                       if frame_rate > 0 and remaining_frames > 0 else None)
+
         # Forget animations that are no longer running, so the samples do not
         # accumulate for jobs that finished or were deleted.
         with _eta_lock:
@@ -447,6 +473,11 @@ def _fetch_stats(conn):
             'performance': {
                 'povray': {'avg': float(stats[0] or 0), 'min': float(stats[1] or 0), 'max': float(stats[2] or 0)},
                 'ffmpeg': {'avg': float(stats[3] or 0), 'min': float(stats[4] or 0), 'max': float(stats[5] or 0)}
+            },
+            'throughput': {
+                'frames_per_min': frame_rate * 60,
+                'remaining_frames': remaining_frames,
+                'overall_eta_seconds': overall_eta,
             },
             'jobs': all_active + history,
             'animation_groups': animation_groups,
