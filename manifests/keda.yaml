@@ -8,24 +8,58 @@ spec:
     name: worker
   minReplicaCount: 0
   # Three workers fit per node at 700m (see app.yaml), less the slots taken by
-  # postgres and the encoders. 33 rather than 36 so nothing sits Pending.
+  # postgres and the encoders. 33 rather than 36 so nothing sits Pending. At 33
+  # every node already sits at ~100% CPU, so a higher ceiling would only add
+  # context-switching, not throughput.
   maxReplicaCount: 33
   pollingInterval: 15 # Check every 15 seconds
   cooldownPeriod: 300 # Wait 5 minutes before scaling to 0
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        # Grab capacity as soon as a batch lands: from a standing fleet, double
+        # it (or add 20) every 15s with no stabilisation delay, so a full queue
+        # reaches the ceiling within a minute.
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          selectPolicy: Max
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 15
+            - type: Pods
+              value: 20
+              periodSeconds: 15
+        # Shed capacity slowly. A worker killed mid-frame hands its row back to
+        # 'pending' and the frame is re-rendered from zero, so evicting workers
+        # on a brief dip in the count -- the tail of a job, where rows are
+        # 'rendering' and nothing new is 'pending' yet -- burns CPU redoing work.
+        # Only wind down when the queue has genuinely stayed short: a 5 minute
+        # window, then at most 20% of the fleet per minute.
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          selectPolicy: Max
+          policies:
+            - type: Percent
+              value: 20
+              periodSeconds: 60
   triggers:
     - type: postgresql
       metadata:
         connectionFromEnv: DB_CONNECTION_STRING
-        # Counts work in flight as well as waiting. Counting only pending rows
-        # scaled the fleet to zero the moment the queue drained, killing the pod
-        # part way through an encode that can run for minutes after the last
-        # frame lands. Rows being rendered keep their worker alive, and an
+        # Counts work in flight as well as waiting, and only the work a render
+        # worker will actually claim. Counting only pending rows scaled the
+        # fleet to zero the moment the queue drained, killing the pod part way
+        # through a frame; rows being rendered keep their worker alive, and an
         # abandoned row still counts so the fleet can scale up from zero to
-        # reclaim it. Parent 'animation' rows are not renderable, so counting
-        # them would scale up workers with no work.
+        # reclaim it. 'animation' parents are not renderable, and 'ffmpeg' rows
+        # belong to the encode pool (see the encoder Deployment): a render
+        # worker never claims either, so counting them would spin up render
+        # workers with nothing to do and hold the fleet off scale-to-zero while
+        # an encode runs.
         query: >-
           SELECT count(*) FROM jobs
-          WHERE type != 'animation'
+          WHERE type NOT IN ('animation', 'ffmpeg')
             AND status IN ('pending', 'rendering')
         targetQueryValue: "1"
       authenticationRef:
