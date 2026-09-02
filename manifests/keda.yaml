@@ -1,0 +1,45 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker-scaler
+  namespace: povomatic
+spec:
+  scaleTargetRef:
+    name: worker
+  minReplicaCount: 0
+  # Three workers fit per node at 700m (see app.yaml), less the slots taken by
+  # postgres and the encoders. 33 rather than 36 so nothing sits Pending.
+  maxReplicaCount: 33
+  pollingInterval: 15 # Check every 15 seconds
+  cooldownPeriod: 300 # Wait 5 minutes before scaling to 0
+  triggers:
+    - type: postgresql
+      metadata:
+        connectionFromEnv: DB_CONNECTION_STRING
+        # Counts work in flight as well as waiting. Counting only pending rows
+        # scaled the fleet to zero the moment the queue drained, killing the pod
+        # part way through an encode that can run for minutes after the last
+        # frame lands. Rows being rendered keep their worker alive, and an
+        # abandoned row still counts so the fleet can scale up from zero to
+        # reclaim it. Parent 'animation' rows are not renderable, so counting
+        # them would scale up workers with no work.
+        query: >-
+          SELECT count(*) FROM jobs
+          WHERE type != 'animation'
+            AND status IN ('pending', 'rendering')
+        targetQueryValue: "1"
+      authenticationRef:
+        name: postgres-auth
+---
+# postgres-secret (with the `connection` key this reads) lives in postgres.yaml,
+# alongside the rest of the database credentials.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: postgres-auth
+  namespace: povomatic
+spec:
+  secretTargetRef:
+    - parameter: connection
+      name: postgres-secret
+      key: connection

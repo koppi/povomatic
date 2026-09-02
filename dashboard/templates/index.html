@@ -1,0 +1,659 @@
+<!--
+povomatic - distributed POV-Ray rendering on Kubernetes
+Copyright (C) 2026 Jakob Flierl
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version, and comes with ABSOLUTELY NO WARRANTY.
+See <https://www.gnu.org/licenses/> for details.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>pov-o-matic</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        :root { 
+            --bg-dark: #171719; --bg-panel: #222326; --bg-hover: #2a2b2f; --border: #323337; 
+            --text-main: #e2e2e3; --text-muted: #8c8d91; --accent-orange: #e27a3f; 
+            --accent-green: #59a55c; --accent-red: #d35151; --accent-blue: #4a90e2;
+        }
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background-color: var(--bg-dark); color: var(--text-main); margin: 0; padding: 0; line-height: 1.5; }
+        .navbar { background-color: var(--bg-panel); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+        .navbar h1 { margin: 0; font-size: 1.2rem; font-weight: 600; display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+        /* Metrics sit beside the logo; the status indicator is pushed to the far right. */
+        .navmetrics { display: flex; align-items: baseline; gap: 24px; flex-wrap: wrap; flex: 1; }
+        .navstat { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+        .navstat-value { font-size: 1.15rem; font-weight: 500; }
+        .navstat-value.highlight { color: var(--accent-orange); }
+        .navstat-value.info { color: var(--accent-blue); }
+        .navstat-value.good { color: var(--accent-green); }
+        .navstat-label { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+        .navstat-sub { font-size: 0.68rem; color: #666; }
+        @media (max-width: 700px) { .navstat-sub { display: none; } }
+        .navbar h1 span { color: var(--accent-orange); }
+        .srclink { color: var(--text-muted); text-decoration: none; border-bottom: 1px dotted var(--border); }
+        .srclink:hover { color: var(--accent-orange); border-bottom-color: var(--accent-orange); }
+        .ws-status { font-size: 0.8rem; display: flex; align-items: center; gap: 6px; color: var(--text-muted); }
+        .ws-indicator { width: 10px; height: 10px; border-radius: 50%; background: var(--accent-red); transition: background 0.3s; }
+        .ws-indicator.connected { background: var(--accent-green); box-shadow: 0 0 8px var(--accent-green); }
+        
+        .container { display: grid; grid-template-columns: 1fr; gap: 24px; padding: 24px; max-width: 1600px; margin: 0 auto; }
+        .panel { background-color: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; }
+        .panel-header { background-color: rgba(0,0,0,0.1); border-bottom: 1px solid var(--border); padding: 12px 16px; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted); }
+        .panel-body { padding: 16px; }
+        .sidebar { display: flex; flex-direction: column; gap: 24px; }
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; }
+        .stat-block { background: rgba(0,0,0,0.15); padding: 16px; border-radius: 4px; border: 1px solid var(--border); text-align: center; }
+        .stat-value { font-size: 1.8rem; font-weight: 300; color: var(--text-main); margin-bottom: 4px; }
+        .stat-value.highlight { color: var(--accent-orange); }
+        .stat-value.good { color: var(--accent-green); }
+        .stat-value.bad { color: var(--accent-red); }
+        .stat-value.info { color: var(--accent-blue); }
+        .stat-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; }
+        .stat-subtext { font-size: 0.7rem; color: #666; margin-top: 4px; }
+        
+        .content-area { display: flex; flex-direction: column; gap: 24px; }
+        .job-list { display: flex; flex-direction: column; gap: 12px; }
+        .group-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+        @media (min-width: 768px) {
+            .group-grid { grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); }
+        }
+        @media (min-width: 1200px) {
+            .group-grid { grid-template-columns: repeat(auto-fill, minmax(450px, 1fr)); }
+        }
+        .group-card { background-color: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 4px; padding: 16px; transition: background 0.2s; display: flex; flex-direction: column; }
+        .group-card:hover { background-color: var(--bg-hover); }
+        
+        .frame-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
+        .frame-card { background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.05); font-size: 0.75rem; }
+        .frame-card-header { display: flex; justify-content: space-between; margin-bottom: 4px; }
+        .frame-card { cursor: help; }
+        #povlog { position: fixed; z-index: 50; display: none; max-width: min(680px, 92vw); max-height: 46vh;
+                  overflow: auto; background: #0d0d0f; border: 1px solid var(--accent-orange);
+                  border-radius: 5px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.55); }
+        #povlog .povlog-head { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
+                               color: var(--accent-orange); margin-bottom: 6px; }
+        #povlog pre { margin: 0; font-family: 'Consolas', ui-monospace, monospace; font-size: 0.72rem;
+                      line-height: 1.35; color: #cfd2d4; white-space: pre-wrap; word-break: break-word; }
+        .frame-card .frame-pct { transition: color 0.2s; }
+        /* Radiosity reads as a different kind of work from the final render,
+           so the tile says so rather than looking like an ordinary pass that
+           mysteriously starts over. */
+        .frame-card.radiosity { border-color: rgba(74,144,226,0.55); }
+        .frame-card.radiosity .frame-pct { color: var(--accent-blue) !important; }
+        .frame-card.radiosity .progress-bar-fill { background: var(--accent-blue); }
+        .frame-node { font-size: 0.68rem; color: var(--text-muted); margin-top: 4px; text-align: right; }
+        
+        .job-row { display: flex; flex-direction: column; background-color: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 4px; padding: 16px; transition: background 0.2s; }
+        .job-row:hover { background-color: var(--bg-hover); }
+        .job-header { display: flex; justify-content: space-between; align-items: center; }
+        .job-info { display: flex; align-items: center; gap: 16px; }
+        .job-icon { width: 8px; height: 8px; border-radius: 50%; background-color: var(--accent-orange); box-shadow: 0 0 8px var(--accent-orange); }
+        .job-icon.done { background-color: var(--accent-green); box-shadow: none; }
+        .job-details { display: flex; flex-direction: column; }
+        .job-name { font-weight: 500; font-size: 1.05rem; }
+        .job-meta { font-size: 0.85rem; color: var(--text-muted); margin-top: 4px; }
+        
+        .progress-bar-bg { background: rgba(0,0,0,0.5); height: 6px; border-radius: 3px; overflow: hidden; width: 100%; border: 1px solid rgba(255,255,255,0.1); }
+        .progress-bar-fill { background: var(--accent-orange); height: 100%; transition: width 0.3s ease; }
+        
+        .preview { margin-top: 12px; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: rgba(0,0,0,0.3); line-height: 0; }
+        .preview img { width: 100%; height: auto; display: block; }
+        .preview-label { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; padding: 6px 8px; line-height: 1.4; border-top: 1px solid var(--border); }
+        .thumb { width: 96px; height: 72px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); background: rgba(0,0,0,0.3); flex-shrink: 0; display: block; }
+        a.thumb-link { line-height: 0; flex-shrink: 0; }
+        a.thumb-link:hover .thumb { border-color: var(--accent-orange); }
+
+        .btn { font: inherit; font-size: 0.8rem; padding: 6px 12px; border-radius: 4px; cursor: pointer; background: transparent; color: var(--text-muted); border: 1px solid var(--border); transition: all 0.15s; }
+        .btn:hover { background: rgba(255,255,255,0.06); color: var(--text-main); }
+        .btn-danger:hover { border-color: var(--accent-red); color: var(--accent-red); }
+        .btn-warn:hover { border-color: var(--accent-orange); color: var(--accent-orange); }
+        .btn:disabled { opacity: 0.4; cursor: default; }
+        .card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+        .navstat.filter { cursor: pointer; padding: 2px 8px; margin: -2px -2px; border-radius: 4px; border: 1px solid transparent; }
+        .navstat.filter:hover { background: rgba(255,255,255,0.06); }
+        .navstat.filter.on { border-color: var(--accent-orange); background: rgba(226,122,63,0.12); }
+        /* Encoding is a distinct phase and looks nothing like rendering: there
+           are no frames, and ffmpeg only reports progress in coarse steps, so a
+           still bar at 0% reads as stalled. The card is tinted, badged, and its
+           bar animates to show the job is alive. */
+        .group-card.encoding { border-color: var(--accent-green); background-color: rgba(89,165,92,0.07); }
+        .group-card.encoding:hover { background-color: rgba(89,165,92,0.12); }
+        .group-card.encoding .progress-bar-fill { background: var(--accent-green); }
+        .encode-progress { margin-top: 12px; }
+        .encode-progress .progress-bar-fill { background: var(--accent-green); }
+        .encode-note { font-size: 0.75rem; color: var(--accent-green); margin-top: 6px; }
+        .state-tag { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.07em; padding: 2px 9px;
+                     border-radius: 10px; border: 1px solid var(--accent-green); color: var(--accent-green);
+                     white-space: nowrap; align-self: center; }
+        .state-tag .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+                          background: var(--accent-green); margin-right: 5px; vertical-align: middle;
+                          animation: pulse 1.4s ease-in-out infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+        /* Progress is unknown until ffmpeg reports its first step, so the bar
+           sweeps instead of sitting empty. */
+        .progress-bar-bg.indeterminate { position: relative; }
+        .progress-bar-bg.indeterminate .progress-bar-fill { width: 35% !important; animation: sweep 1.5s ease-in-out infinite; }
+        @keyframes sweep { 0% { transform: translateX(-110%); } 100% { transform: translateX(300%); } }
+        @media (prefers-reduced-motion: reduce) {
+            .state-tag .dot, .progress-bar-bg.indeterminate .progress-bar-fill { animation: none; }
+            .progress-bar-bg.indeterminate .progress-bar-fill { width: 100% !important; opacity: 0.5; }
+        }
+
+        .error-row { background-color: rgba(211, 81, 81, 0.05); border-left: 3px solid var(--accent-red); padding: 12px 16px; border-radius: 4px; margin-bottom: 12px; }
+        .error-job { font-weight: 600; color: var(--accent-red); font-size: 0.9rem; margin-bottom: 8px; }
+        .error-log { font-family: 'Consolas', monospace; font-size: 0.8rem; color: #d89b9b; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 4px; white-space: pre-wrap; overflow-x: auto; max-height: 200px; border: 1px solid rgba(211, 81, 81, 0.2); }
+        /* Centred both ways rather than just horizontally: the panel keeps a
+           card's worth of height when empty, so the text sat against the top of
+           an otherwise blank box. */
+        .empty-state { display: flex; align-items: center; justify-content: center; text-align: center;
+                       min-height: 140px; padding: 30px; color: var(--text-muted); font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+    <div class="navbar">
+        <h1>pov<span>o</span>matic</h1>
+        <div class="navmetrics">
+            <div class="navstat filter" data-filter="queued" role="button" tabindex="0" title="Show only queued renders"><span class="navstat-value highlight" id="queued-count">-</span><span class="navstat-label">Queued</span></div>
+            <div class="navstat filter" data-filter="running" role="button" tabindex="0" title="Show only running renders"><span class="navstat-value highlight" id="rendering-count">-</span><span class="navstat-label">Running</span></div>
+            <div class="navstat filter" data-filter="encoding" role="button" tabindex="0" title="Show only encodes"><span class="navstat-value good" id="encoding-count">-</span><span class="navstat-label">Encoding</span></div>
+            <div class="navstat"><span class="navstat-value info" id="pov-perf">-</span><span class="navstat-label">POV-Ray / frame</span><span class="navstat-sub" id="pov-minmax">-</span></div>
+            <div class="navstat"><span class="navstat-value info" id="ffmpeg-perf">-</span><span class="navstat-label">FFmpeg avg</span></div>
+        </div>
+        <div class="ws-status">
+            <div id="ws-indicator" class="ws-indicator"></div>
+            <span id="ws-text">Connecting...</span>
+            <!-- The AGPL asks that people using this over a network be told
+                 where the source is, which for a dashboard means saying so on
+                 the page itself. -->
+            <a class="srclink" href="https://github.com/koppi/povomatic"
+               target="_blank" rel="noopener">AGPLv3 source</a>
+        </div>
+    </div>
+
+    <div id="povlog" role="tooltip"><div class="povlog-head"></div><pre></pre></div>
+
+    <div class="container">
+        <div class="content-area">
+            <div class="panel" id="active-panel">
+                <div class="panel-header" id="active-header">Active Renders</div>
+                <div class="panel-body">
+                    <div class="group-grid" id="active-renders"><div class="empty-state">No active renders.</div></div>
+                </div>
+            </div>
+            <div class="panel" id="completed-panel">
+                <div class="panel-header">Completed Render Jobs</div>
+                <div class="panel-body">
+                    <div class="job-list" id="completed-jobs"><div class="empty-state">No completed jobs.</div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function post(url, body) {
+            const res = await fetch(url, {method: 'POST'});
+            if (!res.ok) alert(`${body} failed: ${res.status} ${res.statusText}`);
+            return res.ok;
+        }
+
+        async function cancelJob(id) {
+            if (!confirm(`Cancel job ${id}? Renders in progress will stop and the frames already produced will be deleted.`)) return;
+            await post(`/jobs/${id}/cancel`, 'Cancel');
+        }
+
+        async function deleteJob(id) {
+            if (!confirm(`Delete job ${id}? This permanently removes its rendered frames and video from disk.`)) return;
+            await post(`/jobs/${id}/delete`, 'Delete');
+        }
+
+        // Rebuilding innerHTML on every push discards and recreates the whole
+        // list, which is what makes the page flicker and restarts any animated
+        // gif in it. Rows are keyed by job id instead and only the fields whose
+        // value actually differs are written back to the DOM.
+        function el(html) {
+            const t = document.createElement('template');
+            t.innerHTML = html.trim();
+            return t.content.firstElementChild;
+        }
+
+        function setText(node, text) {
+            if (node.textContent !== text) node.textContent = text;
+        }
+
+        function setAttr(node, name, value) {
+            if (node.getAttribute(name) !== value) node.setAttribute(name, value);
+        }
+
+        function setWidth(node, pct) {
+            const w = `${pct}%`;
+            if (node.style.width !== w) node.style.width = w;
+        }
+
+        function syncList(container, items, keyOf, create, update, emptyText) {
+            const seen = new Set();
+
+            for (const item of items) {
+                const key = String(keyOf(item));
+                seen.add(key);
+                let node = container.querySelector(`:scope > [data-key="${CSS.escape(key)}"]`);
+                if (!node) {
+                    node = create(item);
+                    node.dataset.key = key;
+                    container.appendChild(node);
+                }
+                update(node, item);
+            }
+
+            if (!items.length) {
+                seen.add('__empty');
+                if (!container.querySelector(':scope > [data-key="__empty"]')) {
+                    const placeholder = el('<div class="empty-state"></div>');
+                    placeholder.dataset.key = '__empty';
+                    placeholder.textContent = emptyText;
+                    container.appendChild(placeholder);
+                }
+            }
+
+            for (const node of Array.from(container.children)) {
+                if (!seen.has(node.dataset.key)) node.remove();
+            }
+
+            // Only touched when the order genuinely changed, so rows are not
+            // moved around on every update.
+            items.forEach((item, i) => {
+                const node = container.querySelector(`:scope > [data-key="${CSS.escape(String(keyOf(item)))}"]`);
+                if (node && container.children[i] !== node) {
+                    container.insertBefore(node, container.children[i]);
+                }
+            });
+        }
+
+        // Render times run from under a second to hours once an animation's
+        // whole cost is accumulated, so a raw seconds count stops being readable.
+        function formatDuration(seconds) {
+            const s = Number(seconds) || 0;
+            if (s <= 0) return '0s';
+            if (s < 60) return `${s < 10 ? s.toFixed(1) : Math.round(s)}s`;
+            if (s < 3600) {
+                const m = Math.floor(s / 60), rest = Math.round(s % 60);
+                return rest ? `${m}m ${rest}s` : `${m}m`;
+            }
+            if (s < 86400) {
+                const h = Math.floor(s / 3600), rest = Math.round((s % 3600) / 60);
+                return rest ? `${h}h ${rest}m` : `${h}h`;
+            }
+            const d = Math.floor(s / 86400), rest = Math.round((s % 86400) / 3600);
+            return rest ? `${d}d ${rest}h` : `${d}d`;
+        }
+
+        // An encode is two ffmpeg passes, and which one is running says more
+        // than the overall percentage on its own.
+        function encodeStage(enc) {
+            if (enc.stage === 'mp4') return 'video (mp4)';
+            if (enc.stage === 'gif') return 'preview (gif)';
+            return 'video and preview gif';
+        }
+
+        // Clock time the job is expected to land, so a long ETA is something
+        // you can act on rather than an interval to add up in your head.
+        function arrivalTime(seconds) {
+            const at = new Date(Date.now() + Number(seconds) * 1000);
+            const sameDay = at.toDateString() === new Date().toDateString();
+            const clock = at.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+            return sameDay ? clock : `${at.toLocaleDateString([], {weekday: 'short'})} ${clock}`;
+        }
+
+        // Clicking a navbar counter narrows both panels to that state; clicking
+        // the same one again clears it. The last payload is kept so a click
+        // redraws immediately instead of waiting for the next push.
+        let activeFilter = null;
+        let lastData = null;
+
+        function setFilter(name) {
+            activeFilter = (activeFilter === name) ? null : name;
+            document.querySelectorAll('.navstat.filter').forEach(el =>
+                el.classList.toggle('on', el.dataset.filter === activeFilter));
+            document.getElementById('active-header').innerText =
+                activeFilter ? `Active Renders \u2014 ${activeFilter}` : 'Active Renders';
+            document.getElementById('completed-panel').hidden = activeFilter !== null;
+            if (lastData) draw(lastData);
+        }
+
+        document.querySelectorAll('.navstat.filter').forEach(el => {
+            el.addEventListener('click', () => setFilter(el.dataset.filter));
+            el.addEventListener('keydown', e => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setFilter(el.dataset.filter); }
+            });
+        });
+
+        // What each card counts as for the navbar filters. An animation with
+        // workers on it is running; one with frames left but none in flight is
+        // still queued.
+        function itemState(item) {
+            if (item.type === 'encode') return 'encoding';
+            if (item.type === 'still') return 'running';
+            return (item.active_frames && item.active_frames.length) ? 'running' : 'queued';
+        }
+
+        // Hovering a frame tile shows what povray is printing for that frame,
+        // refreshed while the pointer stays on it. Fetched on demand rather than
+        // carried in every stats push, which would be a thousand characters per
+        // running frame two or three times a second for something nobody is
+        // usually looking at. Delegated, so tiles created later need no wiring.
+        const povlog = document.getElementById('povlog');
+        const povlogHead = povlog.querySelector('.povlog-head');
+        const povlogBody = povlog.querySelector('pre');
+        let logTimer = null, logJob = null;
+
+        function placeLog(evt) {
+            const pad = 14;
+            const w = povlog.offsetWidth || 420, hgt = povlog.offsetHeight || 160;
+            let x = evt.clientX + pad, y = evt.clientY + pad;
+            if (x + w > window.innerWidth - 8) x = Math.max(8, evt.clientX - w - pad);
+            if (y + hgt > window.innerHeight - 8) y = Math.max(8, evt.clientY - hgt - pad);
+            povlog.style.left = `${x}px`;
+            povlog.style.top = `${y}px`;
+        }
+
+        async function refreshLog(id) {
+            try {
+                const res = await fetch(`/jobs/${id}/log`);
+                if (!res.ok) { povlogBody.textContent = `no output (HTTP ${res.status})`; return; }
+                const d = await res.json();
+                povlogHead.textContent = `job ${id} — ${d.status} ${d.progress}%`;
+                povlogBody.textContent = (d.log || '').trimEnd() || 'povray has not printed anything yet';
+                povlog.scrollTop = povlog.scrollHeight;
+            } catch (e) {
+                povlogBody.textContent = 'could not read the output';
+            }
+        }
+
+        function stopLog() {
+            if (logTimer) { clearInterval(logTimer); logTimer = null; }
+            logJob = null;
+            povlog.style.display = 'none';
+        }
+
+        document.addEventListener('mouseover', evt => {
+            const tile = evt.target.closest('.frame-card');
+            if (!tile || !tile.dataset.jobId) return;
+            if (logJob === tile.dataset.jobId) return;
+            stopLog();
+            logJob = tile.dataset.jobId;
+            povlogHead.textContent = `job ${logJob}`;
+            povlogBody.textContent = 'reading…';
+            povlog.style.display = 'block';
+            placeLog(evt);
+            refreshLog(logJob);
+            logTimer = setInterval(() => refreshLog(logJob), 1000);
+        });
+
+        document.addEventListener('mousemove', evt => {
+            if (logJob && evt.target.closest('.frame-card')) placeLog(evt);
+        });
+
+        document.addEventListener('mouseout', evt => {
+            const tile = evt.target.closest('.frame-card');
+            if (tile && !tile.contains(evt.relatedTarget)) stopLog();
+        });
+
+        const socket = io({transports: ['polling']});
+        socket.on('connect', () => {
+            document.getElementById('ws-indicator').classList.add('connected');
+            document.getElementById('ws-text').innerText = "Live";
+        });
+
+        socket.on('stats', (data) => {
+            document.getElementById('queued-count').innerText = data.queued_jobs;
+            document.getElementById('rendering-count').innerText = data.rendering_workers;
+            document.getElementById('encoding-count').innerText = data.encoding_jobs;
+            document.getElementById('pov-perf').innerText = formatDuration(data.performance.povray.avg);
+            document.getElementById('pov-minmax').innerText =
+                `Min: ${formatDuration(data.performance.povray.min)}, Max: ${formatDuration(data.performance.povray.max)}`;
+            document.getElementById('ffmpeg-perf').innerText = formatDuration(data.performance.ffmpeg.avg);
+
+            const completedJobsDiv = document.getElementById('completed-jobs');
+            const rendersDiv = document.getElementById('active-renders');
+
+            // Show only completed jobs in the table
+            // An animation is marked completed the moment its last frame lands,
+            // but it is not finished until both encodes are. The parent's
+            // output_path is set only once the mp4 and the gif are both on disk,
+            // so it is the signal for belonging here; until then the job shows
+            // in the active panel as its two encode cards. Basing this on the
+            // encodes still in flight instead would flash the row for the
+            // moment between the last frame and the encodes being queued.
+            const completedJobs = data.jobs.filter(j =>
+                j.status === 'completed' && (j.type !== 'animation' || j.output_path));
+            // An animation is completed the moment its last frame lands, but its
+            // video is produced afterwards, so a finished row can still have work
+            // running against it.
+            // An animation queues one encode per output and they run at the
+            // same time, so a parent has more than one: keying by parent alone
+            // showed whichever happened to be last.
+            const encodesByParent = {};
+            for (const e of (data.encodes || [])) {
+                (encodesByParent[String(e.parent)] ||= []).push(e);
+            }
+
+            syncList(completedJobsDiv, completedJobs, j => j.id,
+                j => {
+                    const node = el(`
+                        <div class="job-row">
+                            <div class="job-header">
+                                <div class="job-info">
+                                    <div class="job-icon done"></div>
+                                    <a class="thumb-link" download hidden><img class="thumb" loading="lazy"></a>
+                                    <div class="job-details">
+                                        <div class="job-name"></div>
+                                        <div class="job-meta"></div>
+                                    </div>
+                                    <span class="state-tag" hidden><span class="dot"></span>Encoding</span>
+                                </div>
+                                <button class="btn btn-danger">Delete</button>
+                            </div>
+                            <div class="encode-progress" hidden>
+                                <div class="progress-bar-bg"><div class="progress-bar-fill"></div></div>
+                                <div class="encode-note"></div>
+                            </div>
+                        </div>`);
+                    node.querySelector('button').addEventListener('click', () => deleteJob(j.id));
+                    return node;
+                },
+                (node, j) => {
+                    setText(node.querySelector('.job-name'), `Job ${j.id} - ${j.scene}`);
+                    const encs = encodesByParent[String(j.id)] || [];
+                    const enc = encs.length > 0;
+                    // The frames are done, but the job is not: saying Finished while
+                    // its video is still being produced contradicts the badge and
+                    // progress bar beside it.
+                    setText(node.querySelector('.job-meta'),
+                            `Type: ${j.type} | ${enc ? 'Encoding' : 'Finished'} | POV: ${formatDuration(j.povray_time)}`);
+
+                    const strip = node.querySelector('.encode-progress');
+                    const del = node.querySelector('.btn-danger');
+                    node.querySelector('.state-tag').hidden = !enc;
+                    strip.hidden = !enc;
+                    if (enc) {
+                        // The bar is the mean of the passes still running, and the
+                        // note names each one, since they progress independently
+                        // and may be on different nodes.
+                        const pct = Math.round(encs.reduce((a, e) => a + (e.progress || 0), 0) / encs.length);
+                        const track = strip.querySelector('.progress-bar-bg');
+                        track.classList.toggle('indeterminate', pct <= 0);
+                        if (pct > 0) setWidth(strip.querySelector('.progress-bar-fill'), pct);
+                        const parts = encs.map(e =>
+                            `${encodeStage(e)} ${Math.round(e.progress)}%${e.node ? ` on ${e.node}` : ''}`);
+                        setText(strip.querySelector('.encode-note'), `Encoding ${parts.join(' · ')}`);
+                        // Deleting now would pull the frames out from under the
+                        // running encode and leave a truncated file behind.
+                        del.disabled = true;
+                        setAttr(del, 'title', 'Cannot delete while the encode is running');
+                    } else {
+                        strip.querySelector('.progress-bar-bg').classList.remove('indeterminate');
+                        del.disabled = false;
+                        del.removeAttribute('title');
+                    }
+
+                    const link = node.querySelector('.thumb-link');
+                    const img = node.querySelector('.thumb');
+                    if (j.preview) {
+                        // src is only reassigned when it changes, otherwise the
+                        // gif would restart on every push.
+                        setAttr(img, 'src', j.preview);
+                        setAttr(img, 'alt', `Render preview for job ${j.id}`);
+                        setAttr(link, 'href', j.download || j.preview);
+                        setAttr(link, 'title', `Download ${j.type === 'still' ? 'image' : 'video'}`);
+                        link.hidden = false;
+                    } else {
+                        link.hidden = true;
+                    }
+                },
+                'No completed jobs.');
+
+            const groups = Object.entries(data.animation_groups)
+                .map(([parentId, group]) => ({key: `g${parentId}`, type: 'animation', parentId, ...group}));
+            const stills = (data.active_stills || [])
+                .map(s => ({key: `s${s.id}`, type: 'still', id: s.id, scene: s.scene, progress: s.progress}));
+
+            // Encodes belong here too: an encode is active work, and its
+            // animation has already left the groups by the time one starts.
+            const encodes = (data.encodes || [])
+                .map(e => ({key: `e${e.id}`, type: 'encode', id: e.id, parentId: e.parent,
+                            scene: e.scene, progress: e.progress, node: e.node}));
+
+            const activeRenders = [...stills, ...groups, ...encodes]
+                .filter(it => !activeFilter || itemState(it) === activeFilter);
+
+            function createActiveCard(item) {
+                const node = el(`
+                    <div class="group-card">
+                        <div class="card-head">
+                            <div class="job-name"></div>
+                            <span class="state-tag" hidden><span class="dot"></span>Encoding</span>
+                            <button class="btn btn-warn">Cancel</button>
+                        </div>
+                        <div class="job-meta"></div>
+                        <div class="progress-bar-bg" style="margin-top: 8px;">
+                            <div class="progress-bar-fill"></div>
+                        </div>
+                        <div class="preview" hidden>
+                            <img alt="Latest rendered frame">
+                            <div class="preview-label"></div>
+                        </div>
+                        <div class="frame-grid"></div>
+                    </div>`);
+                // An encode card cancels its animation, not just the ffmpeg row,
+                // so the parent does not sit in 'rendering' after the encode dies.
+                node.querySelector('button').addEventListener('click', () =>
+                    cancelJob(item.type === 'still' ? item.id : item.parentId));
+                return node;
+            }
+
+            syncList(rendersDiv, activeRenders, item => item.key, createActiveCard,
+                (node, item) => {
+                    if (item.type === 'encode') {
+                        const percent = Math.round(item.progress);
+                        node.classList.add('encoding');
+                        node.querySelector('.state-tag').hidden = false;
+                        setText(node.querySelector('.job-name'),
+                                `Job ${item.parentId}${item.scene ? ` - ${item.scene}` : ''}`);
+                        setText(node.querySelector('.job-meta'), percent > 0
+                                ? `Encoding ${encodeStage(item)} — ${percent}%${item.node ? ` on ${item.node}` : ''}`
+                                : `Encoding ${encodeStage(item)}${item.node ? ` on ${item.node}` : ''}`);
+                        // ffmpeg reports in coarse steps, so until the first one
+                        // arrives the bar sweeps rather than showing a bare 0%.
+                        const track = node.querySelector('.progress-bar-bg');
+                        track.classList.toggle('indeterminate', percent <= 0);
+                        if (percent > 0) setWidth(node.querySelector('.progress-bar-fill'), percent);
+                        node.querySelector('.preview').hidden = true;
+                        node.querySelector('.frame-grid').hidden = true;
+                        return;
+                    }
+
+                    node.classList.remove('encoding');
+                    node.querySelector('.state-tag').hidden = true;
+                    node.querySelector('.progress-bar-bg').classList.remove('indeterminate');
+                    node.querySelector('.frame-grid').hidden = false;
+
+                    if (item.type === 'still') {
+                        const percent = Math.round(item.progress);
+                        setText(node.querySelector('.job-name'),
+                                `Job ${item.id}${item.scene ? ` - ${item.scene}` : ''}`);
+                        setText(node.querySelector('.job-meta'), `Progress: ${percent}%`);
+                        setWidth(node.querySelector('.progress-bar-fill'), percent);
+                        node.querySelector('.preview').hidden = true;
+                        return;
+                    }
+
+                    const percent = item.total_frames > 0 ? Math.round((item.frames_rendered / item.total_frames) * 100) : 0;
+                    const remaining = item.total_frames - item.frames_rendered;
+                    const eta = item.eta_seconds
+                        ? ` | ETA ${formatDuration(item.eta_seconds)} (~${arrivalTime(item.eta_seconds)})` : '';
+
+                    setText(node.querySelector('.job-name'),
+                            `Job ${item.parentId}${item.scene_file ? ` - ${item.scene_file}` : ''}`);
+                    setText(node.querySelector('.job-meta'),
+                            `Overall Progress: ${item.frames_rendered} / ${item.total_frames} frames (${percent}%)${eta}`);
+                    setWidth(node.querySelector('.progress-bar-fill'), percent);
+
+                    const preview = node.querySelector('.preview');
+                    if (item.preview) {
+                        setAttr(preview.querySelector('img'), 'src', item.preview);
+                        setText(preview.querySelector('.preview-label'),
+                                `Latest frame — ${item.preview.split('/').pop()}`);
+                        preview.hidden = false;
+                    } else {
+                        preview.hidden = true;
+                    }
+
+                    const frames = [...item.active_frames].sort((a, b) => a.current_frame - b.current_frame);
+                    syncList(node.querySelector('.frame-grid'), frames, f => f.current_frame,
+                        () => el(`
+                            <div class="frame-card">
+                                <div class="frame-card-header">
+                                    <span class="frame-no"></span>
+                                    <span class="frame-pct" style="color: var(--accent-orange);"></span>
+                                </div>
+                                <div class="progress-bar-bg">
+                                    <div class="progress-bar-fill"></div>
+                                </div>
+                                <div class="frame-node"></div>
+                            </div>`),
+                        (fnode, f) => {
+                            // povray reports a percentage only once it is
+                            // rendering, so a parsing frame would otherwise sit
+                            // at a flat 0% with nothing to say it is working.
+                            // There is no parse percentage to show: povray
+                            // prints its parsing banner and nothing further
+                            // until the first pixels are done, so the bar
+                            // sweeps for that phase instead of pretending.
+                            const parsing = f.stage === 'parsing';
+                            // Radiosity does have a percentage, unlike parsing:
+                            // povray runs the whole image as pretrace passes
+                            // before the real render, counting pixels each time.
+                            const radiosity = f.stage === 'radiosity';
+                            setText(fnode.querySelector('.frame-no'), `Frame ${f.current_frame}`);
+                            setText(fnode.querySelector('.frame-pct'),
+                                    parsing ? 'parsing' : (radiosity ? `radiosity ${f.progress}%` : `${f.progress}%`));
+                            fnode.querySelector('.progress-bar-bg').classList.toggle('indeterminate', parsing);
+                            fnode.classList.toggle('radiosity', radiosity);
+                            if (!parsing) setWidth(fnode.querySelector('.progress-bar-fill'), f.progress);
+                            setText(fnode.querySelector('.frame-node'), f.node || '');
+                            // The tile carries its job id so hovering can fetch
+                            // that frame's output without wiring each new card.
+                            if (fnode.dataset.jobId !== String(f.id)) fnode.dataset.jobId = String(f.id);
+                        },
+                        '');
+                },
+                'No active renders.');
+        });
+    </script>
+</body>
+</html>

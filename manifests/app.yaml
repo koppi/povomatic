@@ -1,0 +1,411 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-output-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteMany
+  nfs:
+    server: 192.168.178.132
+    path: /nfs/povray/output
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-input-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteMany
+  nfs:
+    server: 192.168.178.132
+    path: /nfs/povray/input
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-assets-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadOnlyMany
+  nfs:
+    server: 192.168.178.132
+    path: /nfs/povray/assets
+    readOnly: true
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: output-pvc
+  namespace: povomatic
+spec:
+  storageClassName: ""
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+  volumeName: nfs-output-pv
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: input-pvc
+  namespace: povomatic
+spec:
+  storageClassName: ""
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+  volumeName: nfs-input-pv
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: assets-pvc
+  namespace: povomatic
+spec:
+  storageClassName: ""
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 5Gi
+  volumeName: nfs-assets-pv
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: povomatic
+spec:
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.28
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command: ['sh', '-c', 'until nslookup postgres.$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace).svc.cluster.local; do echo waiting for postgres; sleep 2; done']
+      containers:
+        - name: api
+          image: koppi/povomatic:latest
+          imagePullPolicy: Always
+          workingDir: /app
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: DB_HOST
+              value: postgres
+            - name: DB_USER
+              value: povomatic
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: DB_NAME
+              value: povomatic
+          volumeMounts:
+            - name: input-storage
+              mountPath: /app/input
+          command: ["python", "api.py"]
+          ports:
+            - containerPort: 5000
+      volumes:
+        - name: input-storage
+          persistentVolumeClaim:
+            claimName: input-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: povomatic
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: 5000
+  selector:
+    app: api
+---
+# Reachable at http://192.168.178.11:8080 (node cube01).
+# externalIPs is used instead of NodePort because 8080 is outside the
+# default node port range (30000-32767).
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-cube01
+  namespace: povomatic
+spec:
+  type: ClusterIP
+  externalIPs:
+    - 192.168.178.11
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 5000
+  selector:
+    app: api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: povomatic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      # Room for the SIGTERM handler to hand its job back before the kill. The
+      # lease covers it if that still fails, but returning the job immediately
+      # avoids waiting out the claim timeout.
+      terminationGracePeriodSeconds: 60
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: "kubernetes.io/hostname"
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: worker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.28
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command: ['sh', '-c', 'until nslookup postgres.$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace).svc.cluster.local; do echo waiting for postgres; sleep 2; done']
+      containers:
+        - name: worker
+          image: koppi/povomatic:latest
+          imagePullPolicy: Always
+          workingDir: /app
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: DB_HOST
+              value: postgres
+            - name: DB_USER
+              value: povomatic
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: DB_NAME
+              value: povomatic
+            - name: INPUT_PATH
+              value: /app/input
+            - name: OUTPUT_PATH
+              value: /app/output
+            - name: ASSETS_PATH
+              value: /app/assets
+            - name: HOME
+              value: /tmp
+            # Four render threads per povray against two workers on a four
+            # core node: deliberate oversubscription. Roughly half of each
+            # frame is single threaded parse and png encoding, so a worker
+            # limited to its own share leaves cores idle during those phases;
+            # letting the two overlap is what fills them. Two threads was set
+            # live and never recorded here, which halved that effect.
+            - name: POVRAY_THREADS
+              value: "4"
+            # Lets a worker recognise encode jobs pinned to its own node.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: output-storage
+              mountPath: /app/output
+            - name: input-storage
+              mountPath: /app/input
+            - name: assets-storage
+              mountPath: /app/assets
+              readOnly: true
+          command: ["python", "worker.py"]
+          resources:
+            requests:
+              # Two workers per node, because one povray cannot keep four
+              # cores busy: roughly half of each frame is single threaded parse
+              # and png encoding, which left the cluster at about half
+              # utilisation with one worker per node. Two overlapping frames
+              # fill each other's serial phases.
+              #
+              # 700m rather than 1000m so a third worker fits: with two, every
+              # node still had 700m to 1400m unrequested and sat at 56% to 90%,
+              # because a worker only draws its full share during the parallel
+              # part of a frame. A third overlapping frame fills the rest. Sized
+              # so the node still has room for
+              # postgres, which needs a reservation of its own. Nodes have
+              # 3950m allocatable and reserve roughly 1100m for system pods, so
+              # 2x1000m leaves about 850m for an 800m postgres request. No cpu
+              # limit is set, so povray's threads still use whatever is idle.
+              cpu: "700m"
+              memory: "256Mi"
+      volumes:
+        - name: output-storage
+          persistentVolumeClaim:
+            claimName: output-pvc
+        - name: input-storage
+          persistentVolumeClaim:
+            claimName: input-pvc
+        - name: assets-storage
+          persistentVolumeClaim:
+            claimName: assets-pvc
+            readOnly: true
+---
+# Encode workers. Same image and loop as the render workers, but ENCODE_ONLY so
+# they claim nothing but 'ffmpeg' jobs, and each holds one amd.com/gpu so the
+# mp4 pass can use the node APU's h264_vaapi encoder. Kept off the render
+# workers so those stay GPU free and run two per node. Two replicas cover the
+# encode load: an animation finishing is rare next to a frame completing, and an
+# encode is a few minutes. Raise this, or drive it from KEDA, if encodes queue.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: encoder
+  namespace: povomatic
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: encoder
+  template:
+    metadata:
+      labels:
+        app: encoder
+    spec:
+      terminationGracePeriodSeconds: 60
+      # Worker nodes only: the control planes are 4-core/7 GiB etcd nodes and an
+      # encoder evicted from one under disk pressure takes an amd.com/gpu with it.
+      nodeSelector:
+        node-role.kubernetes.io/worker: ""
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: "kubernetes.io/hostname"
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: encoder
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.28
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command: ['sh', '-c', 'until nslookup postgres.$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace).svc.cluster.local; do echo waiting for postgres; sleep 2; done']
+      containers:
+        - name: encoder
+          image: koppi/povomatic:latest
+          imagePullPolicy: Always
+          workingDir: /app
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: DB_HOST
+              value: postgres
+            - name: DB_USER
+              value: povomatic
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: DB_NAME
+              value: povomatic
+            - name: INPUT_PATH
+              value: /app/input
+            - name: OUTPUT_PATH
+              value: /app/output
+            - name: ASSETS_PATH
+              value: /app/assets
+            - name: HOME
+              value: /tmp
+            - name: ENCODE_ONLY
+              value: "true"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: output-storage
+              mountPath: /app/output
+            - name: input-storage
+              mountPath: /app/input
+            - name: assets-storage
+              mountPath: /app/assets
+              readOnly: true
+          command: ["python", "worker.py"]
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              # The generic-device-plugin (kube-system) wires the devices cgroup
+              # and injects /dev/dri/renderD128; a plain hostPath mount is
+              # cgroup-denied. Shareable (count 10/node), so several encoders or
+              # a Jellyfin can co-exist on one node.
+              devic.es/dri: 1
+      volumes:
+        - name: output-storage
+          persistentVolumeClaim:
+            claimName: output-pvc
+        - name: input-storage
+          persistentVolumeClaim:
+            claimName: input-pvc
+        - name: assets-storage
+          persistentVolumeClaim:
+            claimName: assets-pvc
+            readOnly: true

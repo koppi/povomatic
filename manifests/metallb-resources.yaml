@@ -1,0 +1,27 @@
+# CPU requests for the speaker daemonset, applied on top of the metallb
+# Helm release's existing values (helm upgrade --reuse-values -f this file).
+#
+# speaker and frr shipped with no resource requests at all, so under CPU
+# contention the scheduler gives them the lowest possible cgroup shares.
+# When KEDA scales the povomatic worker deployment out to 2 uncapped povray
+# processes per node (see manifests/app.yaml), those workers burst past their
+# own 1200m request and starve speaker/frr of the CPU they need to answer
+# their own localhost health checks within the probe timeout. The resulting
+# CrashLoopBackOff drops each node in and out of the memberlist gossip ring,
+# which forces MetalLB to re-run L2 leader election and re-announce ARP for
+# the VIPs (192.168.178.199/.201/.210) — that ARP churn is what made the
+# dashboard intermittently unreachable from outside the cluster while the
+# app itself stayed healthy throughout.
+#
+# A small guaranteed share is enough: these are lightweight control-plane
+# processes, not the thing competing for the node's rendering capacity.
+speaker:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 100Mi
+  frr:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 100Mi

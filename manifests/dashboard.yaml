@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: povomatic
+spec:
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.28
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command: ['sh', '-c', 'until nslookup postgres.$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace).svc.cluster.local; do echo waiting for postgres; sleep 2; done']
+      containers:
+        - name: dashboard
+          image: koppi/povomatic:latest
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command: ["python", "dashboard/app.py"]
+          workingDir: /app
+          ports:
+            - containerPort: 5000
+          env:
+            - name: DB_HOST
+              value: postgres
+            - name: DB_NAME
+              value: povomatic
+            - name: DB_USER
+              value: povomatic
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+          # Readiness fails within ~30s of the stats pipeline going quiet, so a
+          # dashboard that has lost the database leaves the Service rather than
+          # serve a page that never updates. Liveness has a much laxer backstop
+          # (LIVE_MAX_AGE, 5 min) that restarts a pod whose background threads
+          # have wedged entirely.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "128Mi"
+            limits:
+              # The dashboard is a reader; a limit here keeps a runaway rebuild
+              # from competing with the renders for a node's cores.
+              cpu: "1000m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: output-storage
+              mountPath: /app/output
+      volumes:
+        - name: output-storage
+          persistentVolumeClaim:
+            claimName: output-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard
+  namespace: povomatic
+  annotations:
+    # Pinned off 192.168.178.202, which the router still resolves as
+    # RE190.fritz.box from an earlier lease to the repeater, so the dashboard
+    # was answering to that name. .210 is outside the DHCP range (.20-.200)
+    # and has no name attached to it.
+    metallb.universe.tf/loadBalancerIPs: 192.168.178.210
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: 5000
+  selector:
+    app: dashboard
+---
+# Reachable at http://192.168.178.11:8081 (node cube01), alongside the API on
+# 8080. externalIPs is used instead of NodePort because 8081 is outside the
+# default node port range (30000-32767).
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-cube01
+  namespace: povomatic
+spec:
+  type: ClusterIP
+  externalIPs:
+    - 192.168.178.11
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 5000
+  selector:
+    app: dashboard

@@ -1,0 +1,114 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: povomatic
+---
+# The database credentials, in one place. Every consumer (postgres itself, the
+# api, the workers, the encoder, the dashboard, and KEDA's trigger) reads from
+# here rather than carrying the password in its own pod spec.
+#
+#   password   : used by POSTGRES_PASSWORD / DB_PASSWORD
+#   connection : the same, as a DSN, for KEDA's postgresql trigger
+#
+# To rotate: change both values here, `kubectl apply`, then
+#   kubectl -n povomatic exec deploy/postgres -- \
+#     psql -U povomatic -c "ALTER USER povomatic PASSWORD '<new>'"
+# and restart the api, worker, encoder and dashboard deployments.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: povomatic
+type: Opaque
+stringData:
+  password: "PKdKRmbuJORFEDXNyhfcIkAFyl7v"
+  connection: "postgresql://povomatic:PKdKRmbuJORFEDXNyhfcIkAFyl7v@postgres.povomatic.svc.cluster.local:5432/povomatic?sslmode=disable"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: povomatic
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: povomatic
+spec:
+  # The volume is ReadWriteOnce, so the default rolling update deadlocks: the
+  # replacement pod waits for a volume the outgoing pod still holds. Recreate
+  # stops the old one first, which is what a single replica database wants.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: POSTGRES_DB
+              value: povomatic
+            - name: POSTGRES_USER
+              value: povomatic
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          resources:
+            requests:
+              # Postgres had no request at all, which made it BestEffort: the
+              # lowest priority for CPU on a node also running two povray
+              # workers. On a node at 94% every query stalled together, trivial
+              # ones included, and the dashboard's refresh stalled with them.
+              # A request both reserves headroom in the scheduler and gives
+              # postgres a proportional share when the node is saturated.
+              cpu: "800m"
+              memory: "256Mi"
+          volumeMounts:
+            - mountPath: /var/lib/postgresql/data
+              name: postgres-data
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: povomatic
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 5432
+  selector:
+    app: postgres

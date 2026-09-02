@@ -1,0 +1,7 @@
+machine:
+  network:
+    interfaces:
+      - interface: enp1s0 # Replace with your interface name (e.g., enp3s0, eth0)
+        dhcp: true      # Or 'addresses: [192.168.178.X/24]' if using static IPs
+        vip:
+          ip: 192.168.178.10 # The floating Virtual IP for your cluster

@@ -1,0 +1,105 @@
+# Single entry point for the whole system, intended to sit behind the name
+# povomatic.fritz.box: the dashboard on port 80 and the API on port 8080.
+#
+# The address sits inside the router's DHCP range (192.168.178.20-200) so the
+# FRITZ!Box can hold a name for it. MetalLB does not speak DHCP: it announces
+# this address over ARP from whichever node holds the service, and never asks
+# the router for a lease. The address must therefore be reserved on the
+# FRITZ!Box, or DHCP will eventually hand it to another device and both will
+# answer for it. 192.168.178.202 already shows what that looks like: it is
+# still resolved as RE190.fritz.box from an earlier lease.
+#
+# .199 is the top of the DHCP range, which the FRITZ!Box allocates from the
+# bottom, so it is the last address to be handed out by accident.
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: povomatic-vip
+  namespace: metallb-system
+spec:
+  addresses:
+    - 192.168.178.199/32
+  # Reserved for the two services below. Without this, any LoadBalancer in the
+  # cluster could be handed this address.
+  autoAssign: false
+---
+# Announced from one node only, so the address always answers with the same MAC
+# and a reservation on the router stays valid.
+#
+# It has to be a worker. Control plane nodes carry the standard
+# node.kubernetes.io/exclude-from-external-load-balancers label, which MetalLB
+# honours, so pinning to cube01 leaves the address with no announcer at all and
+# no error to explain it.
+#
+# It also has to be a node with a static address. cube05 sits at .15, outside
+# the DHCP range, so it never requests a lease and can never be offered .199
+# for itself. Pinning to cube09-12, which are DHCP clients inside the range,
+# would mean the router handing a node its own VIP at the next renewal.
+#
+# The trade is availability: with one node advertising, the address is
+# unreachable while cube05 is down, where MetalLB would otherwise fail over.
+# The backing pods can run anywhere; MetalLB does not require the announcing
+# node to hold an endpoint.
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: povomatic-vip-adv
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - povomatic-vip
+  nodeSelectors:
+    - matchLabels:
+        kubernetes.io/hostname: cube05
+---
+# Pre-existing cluster resource, redeclared here because it has to be narrowed.
+# It carried no pool list, which in MetalLB means every pool, so it advertised
+# povomatic-vip from all twelve nodes and undid the pinning above. Listing the
+# two original pools keeps its behaviour for them exactly as it was.
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: l2-adv
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - extended-pool
+    - first-pool
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: povomatic-dashboard
+  namespace: povomatic
+  annotations:
+    metallb.universe.tf/address-pool: povomatic-vip
+    # Both Services request the same address and carry a matching
+    # allow-shared-ip value, which is what lets one IP front two different
+    # deployments. MetalLB only permits this while they do not collide on a
+    # port, so 80 and 8080 must stay distinct.
+    metallb.universe.tf/allow-shared-ip: povomatic-vip
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 80
+      targetPort: 5000
+  selector:
+    app: dashboard
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: povomatic-api
+  namespace: povomatic
+  annotations:
+    metallb.universe.tf/address-pool: povomatic-vip
+    metallb.universe.tf/allow-shared-ip: povomatic-vip
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 5000
+  selector:
+    app: api
