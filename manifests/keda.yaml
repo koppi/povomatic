@@ -16,6 +16,13 @@ spec:
   cooldownPeriod: 300 # Wait 5 minutes before scaling to 0
   advanced:
     horizontalPodAutoscalerConfig:
+      # The behavior block below governs scaling only while the trigger is
+      # active, i.e. between 1 and maxReplicaCount. Once the queue is empty the
+      # trigger goes inactive and KEDA scales the Deployment straight from
+      # whatever it is at to 0 in one step, cooldownPeriod after the queue
+      # emptied -- the gradual scaleDown policy does not apply to that last
+      # drop. So scaleDown here only ever shapes the tail of a drain where work
+      # is still queued, never the final wind-down to zero.
       behavior:
         # Grab capacity as soon as a batch lands: from a standing fleet, double
         # it (or add 20) every 15s with no stabilisation delay, so a full queue
