@@ -337,7 +337,7 @@ def run_process_with_progress(f, conn, job_id, cmd, progress_re, total_frames, i
     last_cancel_check = time.time()
     last_log_push = 0.0
     phase = None
-    pixels_seen = None
+    pixels_max = 0
     render_pass = 0
 
     # Waiting on the pipe with a timeout rather than blocking in readline: a
@@ -357,14 +357,25 @@ def run_process_with_progress(f, conn, job_id, cmd, progress_re, total_frames, i
                     pixels = POV_PIXELS_RE.search(line)
                     if pixels:
                         count = int(pixels.group(1))
-                        # A count lower than the last one means povray started
-                        # the image again, which only happens for radiosity.
-                        if pixels_seen is not None and count < pixels_seen:
+                        # povray runs the whole frame more than once only for
+                        # radiosity: a coarse pretrace pass over the image before
+                        # the real render, which resets the pixel counter to
+                        # near zero. A plain render counts up once. It does not
+                        # count up cleanly, though: with +WT threads finish
+                        # blocks slightly out of order, so the count dips by a
+                        # few thousand pixels constantly. Treating any dip as a
+                        # new pass flipped every threaded render to 'radiosity'
+                        # on its first blip; a real restart drops the count to a
+                        # small fraction of how far the pass had got, well below
+                        # that jitter.
+                        if pixels_max and count * 4 < pixels_max:
                             render_pass += 1
+                            pixels_max = 0
+                            last_reported_percent = 0
                             if phase != 'radiosity':
                                 phase = 'radiosity'
                                 set_stage(conn, job_id, phase)
-                        pixels_seen = count
+                        pixels_max = max(pixels_max, count)
                     if phase is None and POV_PARSING_RE.search(line):
                         phase = 'parsing'
                         set_stage(conn, job_id, phase)
