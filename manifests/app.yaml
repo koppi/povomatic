@@ -249,16 +249,16 @@ spec:
               value: /app/assets
             - name: HOME
               value: /tmp
-            # Two render threads per povray. Three workers land on most 4-core
-            # nodes, so 4 threads each was 12 on 4 cores, and on the nodes that
-            # drew a fourth worker 16 on 4: a batch of same-scene frames that
-            # all reach the parallel render phase together then thrash the cache
-            # and crawl. At 2 threads a full node is 6 on 4, enough
-            # oversubscription to cover the serial parse and png phases without
-            # the collapse. Pair with the DoNotSchedule spread below so no node
-            # gets a fourth worker.
+            # Four render threads per povray against the two-to-three workers a
+            # 4-core node now takes (the DoNotSchedule spread above caps it):
+            # deliberate oversubscription. Roughly half of each frame is single
+            # threaded parse and png encoding, so a worker limited to its own
+            # share leaves cores idle during those phases; letting the frames
+            # overlap is what fills them. The earlier per-node collapse was the
+            # soft spread stacking a fourth worker on some nodes (16 threads on
+            # 4 cores); capping that, not cutting threads, is the fix.
             - name: POVRAY_THREADS
-              value: "2"
+              value: "4"
             # Lets a worker recognise encode jobs pinned to its own node.
             - name: NODE_NAME
               valueFrom:
