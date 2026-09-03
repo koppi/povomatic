@@ -180,7 +180,11 @@ def init_db():
                         IF (TG_OP = 'DELETE') THEN j := OLD; ELSE j := NEW; END IF;
 
                         -- Frames and encodes carry the parent animation's id in
-                        -- scene_file; resolve it to that animation's name.
+                        -- scene_file; resolve it to that animation's name. On a
+                        -- DELETE the parent row is usually gone already (deleting
+                        -- an animation removes it and its children together), so
+                        -- the lookup misses and the deleted event falls back to
+                        -- showing the raw parent id. Cosmetic, and only on delete.
                         disp := j.scene_file;
                         IF j.type IN ('ffmpeg', 'animation-frame') AND j.scene_file ~ '^\\d+$' THEN
                             SELECT scene_file INTO disp FROM jobs WHERE id = j.scene_file::int;
