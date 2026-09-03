@@ -682,6 +682,42 @@ def job_log(job_id):
         return jsonify({'error': 'not found'}), 404
     return jsonify({'log': row[0] or '', 'status': row[1], 'progress': row[2]})
 
+# How many rows the Log tab shows. The table is populated by a trigger on jobs
+# (see api.py) that records submissions, status changes, encode passes and
+# deletions; frame rows are logged only when they fail.
+EVENT_LIMIT = int(os.environ.get('EVENT_LIMIT', '400'))
+
+@app.route('/events')
+def events():
+    """Recent job events, newest first, for the Log tab.
+
+    Polled while that tab is open rather than folded into the stats push: the
+    log changes on job transitions, not several times a second, and most of the
+    time nobody is looking at it. Returns an empty list rather than an error if
+    the table is not there yet, so a dashboard that started before api ran its
+    migration still renders the tab.
+    """
+    try:
+        conn = stats_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('job_events')")
+            if cur.fetchone()[0] is None:
+                conn.commit()
+                return jsonify({'events': []})
+            cur.execute(
+                "SELECT ts, job_id, scene_file, job_type, event, detail "
+                "FROM job_events ORDER BY ts DESC, id DESC LIMIT %s", (EVENT_LIMIT,))
+            rows = cur.fetchall()
+        conn.commit()
+    except psycopg2.Error as e:
+        drop_stats_connection()
+        logger.error(f"Error reading events: {e}")
+        return jsonify({'error': 'unavailable'}), 503
+    return jsonify({'events': [
+        {'ts': r[0].isoformat(), 'job_id': r[1], 'scene': r[2],
+         'type': r[3], 'event': r[4], 'detail': r[5]}
+        for r in rows]})
+
 @app.route('/healthz')
 def healthz():
     """Liveness: a stats rebuild has succeeded within LIVE_MAX_AGE.

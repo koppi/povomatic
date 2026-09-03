@@ -22,6 +22,9 @@ See <https://www.gnu.org/licenses/> for details.
             --accent-green: #59a55c; --accent-red: #d35151; --accent-blue: #4a90e2;
         }
         * { box-sizing: border-box; }
+        /* The panels and views set display:flex, which overrides the browser's
+           default [hidden] rule; make the attribute win again. */
+        [hidden] { display: none !important; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background-color: var(--bg-dark); color: var(--text-main); margin: 0; padding: 0; line-height: 1.5; }
         .navbar { background-color: var(--bg-panel); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
         .navbar h1 { margin: 0; font-size: 1.2rem; font-weight: 600; display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
@@ -153,6 +156,39 @@ See <https://www.gnu.org/licenses/> for details.
            an otherwise blank box. */
         .empty-state { display: flex; align-items: center; justify-content: center; text-align: center;
                        min-height: 140px; padding: 30px; color: var(--text-muted); font-size: 0.9rem; }
+
+        /* Tab bar between the navbar and the content. */
+        .tabbar { display: flex; gap: 4px; padding: 12px 24px 0; max-width: 1600px; margin: 0 auto; }
+        .tab { font: inherit; font-size: 0.8rem; font-weight: 600; text-transform: uppercase;
+               letter-spacing: 0.03em; padding: 8px 18px; cursor: pointer; color: var(--text-muted);
+               background: var(--bg-panel); border: 1px solid var(--border); border-bottom: none;
+               border-radius: 6px 6px 0 0; }
+        .tab:hover { color: var(--text-main); }
+        .tab.on { color: var(--accent-orange); background: var(--bg-hover);
+                  box-shadow: inset 0 2px 0 var(--accent-orange); }
+        .tabbar + .container { padding-top: 12px; }
+
+        .log-scroll { overflow-x: auto; }
+        .log-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+        .log-table th { text-align: left; font-size: 0.68rem; text-transform: uppercase;
+                        letter-spacing: 0.04em; color: var(--text-muted); font-weight: 600;
+                        padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+        .log-table td { padding: 7px 12px; border-bottom: 1px solid rgba(255,255,255,0.04);
+                        vertical-align: top; }
+        .log-table tr:hover td { background: rgba(255,255,255,0.03); }
+        .log-ts { color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .log-job { white-space: nowrap; }
+        .log-job .id { color: var(--text-muted); }
+        .log-detail { color: var(--text-muted); font-family: 'Consolas', ui-monospace, monospace;
+                      font-size: 0.76rem; word-break: break-word; }
+        .log-badge { display: inline-block; font-size: 0.66rem; text-transform: uppercase;
+                     letter-spacing: 0.04em; padding: 2px 8px; border-radius: 10px;
+                     border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
+        .log-badge.ev-submitted { border-color: var(--accent-blue); color: var(--accent-blue); }
+        .log-badge.ev-rendering, .log-badge.ev-encoding { border-color: var(--accent-orange); color: var(--accent-orange); }
+        .log-badge.ev-completed { border-color: var(--accent-green); color: var(--accent-green); }
+        .log-badge.ev-failed { border-color: var(--accent-red); color: var(--accent-red); }
+        .log-badge.ev-canceled, .log-badge.ev-deleted { border-color: var(--border); color: var(--text-muted); }
     </style>
 </head>
 <body>
@@ -180,8 +216,13 @@ See <https://www.gnu.org/licenses/> for details.
 
     <div id="povlog" role="tooltip"><div class="povlog-head"></div><pre></pre></div>
 
+    <div class="tabbar" role="tablist">
+        <button class="tab on" data-tab="renders" role="tab" aria-selected="true">Renders</button>
+        <button class="tab" data-tab="log" role="tab" aria-selected="false">Log</button>
+    </div>
+
     <div class="container">
-        <div class="content-area">
+        <div class="content-area" id="renders-view">
             <div class="panel" id="active-panel">
                 <div class="panel-header" id="active-header">Active Renders</div>
                 <div class="panel-body">
@@ -192,6 +233,20 @@ See <https://www.gnu.org/licenses/> for details.
                 <div class="panel-header">Completed Render Jobs</div>
                 <div class="panel-body">
                     <div class="job-list" id="completed-jobs"><div class="empty-state">No completed jobs.</div></div>
+                </div>
+            </div>
+        </div>
+        <div class="content-area" id="log-view" hidden>
+            <div class="panel">
+                <div class="panel-header">Event Log</div>
+                <div class="panel-body">
+                    <div class="log-scroll">
+                        <table class="log-table">
+                            <thead><tr><th>Time</th><th>Job</th><th>Event</th><th>Detail</th></tr></thead>
+                            <tbody id="log-rows"></tbody>
+                        </table>
+                    </div>
+                    <div class="empty-state" id="log-empty">No events yet.</div>
                 </div>
             </div>
         </div>
@@ -671,6 +726,70 @@ See <https://www.gnu.org/licenses/> for details.
                 },
                 'No active renders.');
         });
+
+        // --- Log tab ------------------------------------------------------
+        // A timestamped feed of job events (submitted / rendering / completed /
+        // failed / encoding / deleted), read from the job_events table the
+        // database fills by trigger. Polled only while the tab is visible, the
+        // same on-demand approach the frame-hover log uses.
+        const escapeHtml = s => String(s).replace(/[&<>"']/g,
+            c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+        function fmtEventTs(iso) {
+            const d = new Date(iso);
+            const clock = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+            return d.toDateString() === new Date().toDateString()
+                ? clock : `${d.toLocaleDateString([], {month: 'short', day: 'numeric'})} ${clock}`;
+        }
+
+        // The badge class keys off the first word, so "encoding mp4" and
+        // "encoding gif" share the rendering colour.
+        const eventClass = ev => `ev-${ev.split(' ')[0]}`;
+
+        let eventTimer = null;
+
+        async function refreshEvents() {
+            const tbody = document.getElementById('log-rows');
+            const empty = document.getElementById('log-empty');
+            try {
+                const res = await fetch('/events');
+                if (!res.ok) {
+                    empty.textContent = 'Event log unavailable.';
+                    empty.hidden = false;
+                    return;
+                }
+                const {events} = await res.json();
+                empty.textContent = 'No events yet.';
+                empty.hidden = events.length > 0;
+                tbody.innerHTML = events.map(e => `
+                    <tr>
+                        <td class="log-ts">${fmtEventTs(e.ts)}</td>
+                        <td class="log-job"><span class="id">#${e.job_id}</span>${e.scene ? ' ' + escapeHtml(e.scene) : ''}</td>
+                        <td><span class="log-badge ${eventClass(e.event)}">${escapeHtml(e.event)}</span></td>
+                        <td class="log-detail">${e.detail ? escapeHtml(e.detail) : ''}</td>
+                    </tr>`).join('');
+            } catch (err) {
+                empty.textContent = 'Could not load the event log.';
+                empty.hidden = false;
+            }
+        }
+
+        document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
+            const toLog = tab.dataset.tab === 'log';
+            document.querySelectorAll('.tab').forEach(t => {
+                const on = t === tab;
+                t.classList.toggle('on', on);
+                t.setAttribute('aria-selected', on ? 'true' : 'false');
+            });
+            document.getElementById('renders-view').hidden = toLog;
+            document.getElementById('log-view').hidden = !toLog;
+            clearInterval(eventTimer);
+            eventTimer = null;
+            if (toLog) {
+                refreshEvents();
+                eventTimer = setInterval(refreshEvents, 3000);
+            }
+        }));
     </script>
 </body>
 </html>

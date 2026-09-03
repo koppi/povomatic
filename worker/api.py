@@ -150,6 +150,90 @@ def init_db():
                     AFTER INSERT OR UPDATE OR DELETE ON jobs
                     FOR EACH ROW EXECUTE FUNCTION notify_job_changes();
                 """)
+
+                # Event log behind the dashboard's Log tab. UNLOGGED to match
+                # jobs: it is a history of that table, so losing it to the same
+                # unclean shutdown that truncates jobs is coherent. A trigger
+                # records submissions, status changes, encode passes and
+                # deletions; frame rows are noisy bookkeeping and are logged
+                # only when they fail. Retention is swept opportunistically from
+                # the trigger so no separate job is needed.
+                cur.execute("""
+                    CREATE UNLOGGED TABLE IF NOT EXISTS job_events (
+                        id       BIGSERIAL PRIMARY KEY,
+                        ts       TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                        job_id   INTEGER NOT NULL,
+                        scene_file VARCHAR(255),
+                        job_type VARCHAR(20),
+                        event    VARCHAR(40) NOT NULL,
+                        detail   TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_job_events_ts ON job_events (ts DESC, id DESC);
+
+                    CREATE OR REPLACE FUNCTION log_job_event() RETURNS TRIGGER AS $$
+                    DECLARE
+                        j     jobs%ROWTYPE;
+                        ev    VARCHAR(40);
+                        det   TEXT;
+                        disp  VARCHAR(255);
+                    BEGIN
+                        IF (TG_OP = 'DELETE') THEN j := OLD; ELSE j := NEW; END IF;
+
+                        -- Frames and encodes carry the parent animation's id in
+                        -- scene_file; resolve it to that animation's name.
+                        disp := j.scene_file;
+                        IF j.type IN ('ffmpeg', 'animation-frame') AND j.scene_file ~ '^\\d+$' THEN
+                            SELECT scene_file INTO disp FROM jobs WHERE id = j.scene_file::int;
+                            disp := coalesce(disp, j.scene_file);
+                        END IF;
+
+                        IF (TG_OP = 'INSERT') THEN
+                            IF j.type = 'animation-frame' THEN RETURN NEW; END IF;
+                            ev  := 'submitted';
+                            det := j.type || CASE WHEN j.frames > 1
+                                                  THEN ' · ' || j.frames || ' frames' ELSE '' END;
+                        ELSIF (TG_OP = 'DELETE') THEN
+                            IF j.type = 'animation-frame' THEN RETURN OLD; END IF;
+                            ev  := 'deleted';
+                        ELSIF (NEW.status IS DISTINCT FROM OLD.status) THEN
+                            IF NEW.type = 'animation-frame' AND NEW.status <> 'failed' THEN
+                                RETURN NEW;
+                            END IF;
+                            ev  := NEW.status;
+                            det := CASE
+                                     WHEN NEW.status = 'failed'
+                                       THEN left(regexp_replace(coalesce(NEW.error_log, ''), '\\s+', ' ', 'g'), 400)
+                                     WHEN NEW.node_name IS NOT NULL AND NEW.status IN ('rendering', 'completed')
+                                       THEN 'on ' || NEW.node_name
+                                   END;
+                            IF NEW.type = 'animation-frame' THEN
+                                det := 'frame ' || NEW.current_frame || coalesce(' — ' || det, '');
+                            END IF;
+                        ELSIF (NEW.type = 'ffmpeg' AND NEW.stage IS DISTINCT FROM OLD.stage
+                               AND NEW.stage IS NOT NULL) THEN
+                            ev  := 'encoding ' || NEW.stage;
+                            det := 'on ' || coalesce(NEW.node_name, '?');
+                        ELSE
+                            RETURN NEW;
+                        END IF;
+
+                        INSERT INTO job_events (job_id, scene_file, job_type, event, detail)
+                        VALUES (j.id, disp, j.type, ev, det);
+
+                        IF (random() < 0.02) THEN
+                            DELETE FROM job_events WHERE ts < now() - interval '7 days';
+                        END IF;
+
+                        IF (TG_OP = 'DELETE') THEN RETURN OLD; END IF;
+                        RETURN NEW;
+                    END;
+                    $$ LANGUAGE plpgsql;
+
+                    DROP TRIGGER IF EXISTS trg_job_events ON jobs;
+                    CREATE TRIGGER trg_job_events
+                    AFTER INSERT OR UPDATE OR DELETE ON jobs
+                    FOR EACH ROW EXECUTE FUNCTION log_job_event();
+                """)
     except Exception as e:
         logger.error(f"Error initializing DB: {e}")
     finally:
