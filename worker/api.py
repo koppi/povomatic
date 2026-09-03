@@ -205,8 +205,15 @@ def init_db():
                             END IF;
                             ev  := NEW.status;
                             det := CASE
+                                     -- The fatal line is at the end of povray's
+                                     -- output, after the version banner and the
+                                     -- parse log, so take the tail and drop
+                                     -- everything up to the last banner rule so
+                                     -- it starts at the error itself.
                                      WHEN NEW.status = 'failed'
-                                       THEN left(regexp_replace(coalesce(NEW.error_log, ''), '\\s+', ' ', 'g'), 400)
+                                       THEN regexp_replace(
+                                              right(regexp_replace(coalesce(NEW.error_log, ''), '\\s+', ' ', 'g'), 300),
+                                              '^.*={4,} ?', '')
                                      WHEN NEW.node_name IS NOT NULL AND NEW.status IN ('rendering', 'completed')
                                        THEN 'on ' || NEW.node_name
                                    END;
