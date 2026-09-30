@@ -28,7 +28,9 @@ the queue so nothing tries.
   pool of encode workers claims it: they hold an `amd.com/gpu` each so the H.264
   pass runs on the node APU's `h264_vaapi` encoder, falling back to libx264 if
   the GPU path fails. The mp4 plays at 25 fps unless the job's `ffmpeg_args`
-  carry `-framerate` / `-r`, which set the rate the frames are read at. It produces an mp4 of the whole animation and a preview gif
+  carry `-framerate` / `-r`, which set the rate the frames are read at. A
+  `<scene>.wav` beside the `.pov`, starting with the first frame, is muxed into
+  the mp4 as its audio track. It produces an mp4 of the whole animation and a preview gif
   fixed at 10 seconds regardless of frame count, sampled across the whole
   sequence rather than truncated. Render workers never claim encodes, so they
   stay GPU free and run two per node; storage is shared NFS, so the encode is not

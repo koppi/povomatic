@@ -509,6 +509,15 @@ def handle_ffmpeg(conn, job_id, scene, frames, p_args, f_args, output_dir, abs_s
 
     ffmpeg_in = ["ffmpeg", "-y", "-framerate", fps, "-start_number", "1", "-i", pattern]
 
+    # A scene's soundtrack, if it has one, is a <scene>.wav beside the .pov that
+    # starts with the first frame, as a bpp export writes it. It becomes the
+    # mp4's audio; -shortest keeps the mp4 as long as the frames.
+    wav_path = os.path.splitext(abs_scene_path)[0] + ".wav"
+    audio_args = []
+    if os.path.isfile(wav_path):
+        ffmpeg_in += ["-i", wav_path]
+        audio_args = ["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "192k", "-shortest"]
+
     def run_mp4(progress_range):
         # Encode workers carry a GPU, so /dev/dri is present and h264_vaapi
         # offloads the H.264 pass to the APU's fixed-function encoder. A missing
@@ -525,6 +534,7 @@ def handle_ffmpeg(conn, job_id, scene, frames, p_args, f_args, output_dir, abs_s
                 cmd = ffmpeg_in + [
                     "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                 ]
+            cmd.extend(audio_args)
             cmd.extend(extra_args)
             cmd.append(mp4_path)
             return cmd
