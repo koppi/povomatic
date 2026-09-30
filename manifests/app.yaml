@@ -8,7 +8,7 @@ spec:
   accessModes:
     - ReadWriteMany
   nfs:
-    server: 192.168.178.132
+    server: cube00.fritz.box
     path: /nfs/povray/output
 ---
 apiVersion: v1
@@ -21,7 +21,7 @@ spec:
   accessModes:
     - ReadWriteMany
   nfs:
-    server: 192.168.178.132
+    server: cube00.fritz.box
     path: /nfs/povray/input
 ---
 apiVersion: v1
@@ -34,7 +34,7 @@ spec:
   accessModes:
     - ReadOnlyMany
   nfs:
-    server: 192.168.178.132
+    server: cube00.fritz.box
     path: /nfs/povray/assets
     readOnly: true
 ---
