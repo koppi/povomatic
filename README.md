@@ -66,8 +66,13 @@ manifests/
   talos-vip-patch.yaml          Talos control plane VIP patch
   talos-longhorn.yaml           Talos kubelet extraMount that persists
                                 /var/mnt/longhorn across reboots
+  talos-install-image.yaml      Talos installer image pin; its schematic
+                                carries the amdgpu, amd-ucode and iscsi-tools
+                                system extensions
 scripts/
   apply-cpu-reservation.sh      applies CPU requests once the queue is idle
+  upgrade-talos.sh              upgrades Talos across the cluster, one node at
+                                a time, keeping those system extensions
   commit-all.sh                 one-off: splits a batch of pending work into
                                 three signed commits (run from a real terminal)
 ```
@@ -131,6 +136,41 @@ and the API on 8080 of a single address, so both sit behind one name. Read its
 comments before using it: MetalLB does not speak DHCP, so if the address is
 inside the router's DHCP range it has to be reserved there, and it is announced
 from one worker node to keep its MAC stable.
+
+### Upgrading Talos
+
+```bash
+talosctl etcd snapshot db.snapshot            # first: something to roll back to
+scripts/upgrade-talos.sh v1.14.2              # or name nodes to upgrade a subset
+talosctl patch machineconfig --nodes <all> \
+    --patch @manifests/talos-install-image.yaml
+```
+
+The snapshot is not optional dressing. Upgrading a control plane reboots it, and
+the three of them only hold quorum because they are done one at a time.
+
+`upgrade-talos.sh` reboots one node at a time, workers before control planes, and
+works around two things that make a plain `talosctl upgrade` quietly do the wrong
+thing.
+
+The image is built from the schematic the cluster already runs, so the `amdgpu`
+driver, `amd-ucode` and the iscsi tools survive. Upgrading from a stock image
+strips the extensions instead, and the encoder pods then sit `Pending` forever.
+
+Longhorn creates a `PodDisruptionBudget` per instance-manager with
+`minAvailable: 1`, which pins `allowedDisruptions` at 0. `talosctl` drains through
+the eviction API, so the eviction is refused and the drain only ends when it times
+out — by which point the new image has already been written to the node's disk.
+The node reports a post-check pass, never reboots, and goes on running the old
+version, with nothing but a `context deadline exceeded` to say so. Check the
+version after upgrading, not just the exit status.
+
+Then patch `install.image` in the same change. An upgrade leaves that pin alone,
+and it is what any later reinstall falls back to, so a stale one sends the node
+back to an old release — or, if it names a schematic built without them, takes the
+GPU driver with it. `talos-install-image.yaml` holds the pin; the schematic ID is
+an opaque hash, so `curl -s https://factory.talos.dev/schematics/<id>` is the only
+way to see what a given one actually contains.
 
 ## Sizing
 
