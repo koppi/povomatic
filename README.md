@@ -170,7 +170,9 @@ and it is what any later reinstall falls back to, so a stale one sends the node
 back to an old release — or, if it names a schematic built without them, takes the
 GPU driver with it. `talos-install-image.yaml` holds the pin; the schematic ID is
 an opaque hash, so `curl -s https://factory.talos.dev/schematics/<id>` is the only
-way to see what a given one actually contains.
+way to see what a given one actually contains. It pins `image` alone and says
+nothing about `wipe`, which records how each node was provisioned and differs
+across the cluster — `cube08` has it true, the other eleven false.
 
 ## Sizing
 

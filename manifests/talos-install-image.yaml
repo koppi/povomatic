@@ -18,4 +18,7 @@
 machine:
   install:
     image: factory.talos.dev/metal-installer/1e17720baa2217bdf64a7caa256011144fce07af5dd12ce18baed735789e7c81:v1.14.2
-    wipe: false
+# `wipe` is deliberately absent. It is not a per-version value — it says how this
+# node was provisioned, and the cluster is not uniform: cube08 has wipe: true, the
+# other eleven false. Pinning it here would quietly rewrite that one node's
+# behaviour the next time someone applies this file across the cluster.
