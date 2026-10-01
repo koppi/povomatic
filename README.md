@@ -73,6 +73,8 @@ scripts/
   apply-cpu-reservation.sh      applies CPU requests once the queue is idle
   upgrade-talos.sh              upgrades Talos across the cluster, one node at
                                 a time, keeping those system extensions
+  etcd-snapshot.sh              takes an etcd snapshot and prunes the old ones;
+                                runs weekly from cron, see below
   commit-all.sh                 one-off: splits a batch of pending work into
                                 three signed commits (run from a real terminal)
 ```
@@ -139,6 +141,15 @@ from one worker node to keep its MAC stable.
 
 ### Upgrading Talos
 
+Node names do not follow their addresses, and `talosctl` takes either. The
+control planes are the first three:
+
+| | |
+|---|---|
+| control plane | `cube01` `.11`, `cube02` `.12`, `cube03` `.13` |
+| workers | `cube04`–`cube08` `.14`–`.18` |
+| | `cube09` `.101`, `cube10`–`cube12` `.133`–`.135` |
+
 ```bash
 talosctl etcd snapshot db.snapshot            # first: something to roll back to
 scripts/upgrade-talos.sh v1.14.2              # or name nodes to upgrade a subset
@@ -148,6 +159,19 @@ talosctl patch machineconfig --nodes <all> \
 
 The snapshot is not optional dressing. Upgrading a control plane reboots it, and
 the three of them only hold quorum because they are done one at a time.
+`etcd-snapshot.sh` takes one and prunes the old ones, on a weekly cron:
+
+```cron
+17 4 * * 0 /nfs/povomatic/scripts/etcd-snapshot.sh >> /nfs/talos-backups/cron.log 2>&1
+```
+
+It keeps 8 snapshots or 30 days, whichever prunes less, and only ever deletes
+after a new one has been written *and* read back — `talosctl` reports the
+revision and key count, and a snapshot missing those is discarded rather than
+pruning its way down to nothing. A partial file is written under a `.partial`
+name and never counted, so a job cut short by a reboot cannot look like a usable
+restore point. It sets `PATH` itself, because cron has neither `talosctl` nor the
+snap `kubectl` on it.
 
 `upgrade-talos.sh` reboots one node at a time, workers before control planes, and
 works around two things that make a plain `talosctl upgrade` quietly do the wrong
