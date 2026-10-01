@@ -182,22 +182,51 @@ for target in "${todo[@]}"; do
   # Hold the instance-manager PDBs down for the length of the drain. Longhorn
   # recreates one within seconds of it being deleted, so deleting it once and
   # moving on is not enough.
+  #
+  # The hold has to outlast the drain, not match it. talosctl keeps evicting until
+  # --drain-timeout, and its default is 5m, so a 180s hold would let the PDB come
+  # back with two minutes of eviction still to do and every remaining attempt
+  # refused. DRAIN_TIMEOUT and HOLD_SECONDS are therefore set together, with the
+  # hold always the longer of the two, and the loop counts down so shortening the
+  # drain actually shortens the hold.
+  DRAIN_TIMEOUT=${DRAIN_TIMEOUT:-5m}
+
+  # The only form worth handling is <m>[<s>], or plain seconds; the hold just has to
+  # outlast the drain, so an unrecognised value falls back to talosctl's own 5m
+  # default rather than guessing. Parsed with shell arithmetic, not bc or date(1),
+  # because neither is guaranteed present and Go durations are not either format's.
+  drain_secs=$DRAIN_TIMEOUT
+  case $drain_secs in
+    *m*s*) mins=${drain_secs%%m*}; secs=${drain_secs##*m}
+           drain_secs=$(( 10#$mins * 60 + 10#${secs%s} )) ;;
+    *m)    drain_secs=$(( 10#${drain_secs%m} * 60 )) ;;
+    *s)    drain_secs=$(( 10#${drain_secs%s} )) ;;
+    *)     drain_secs=300 ;;
+  esac
+  [ "$drain_secs" -gt 0 ] 2>/dev/null || drain_secs=300
+  # +30s of slack for the drain to finish and the node to go down, plus a floor so
+  # a short drain cannot produce a hold too short to cover itself.
+  [ "$HOLD_SECONDS" -gt $(( drain_secs + 30 )) ] 2>/dev/null || HOLD_SECONDS=$(( drain_secs + 30 ))
+  [ "$HOLD_SECONDS" -lt 60 ] && HOLD_SECONDS=60
+
   hold=""
   for pod in $(instance_managers "$name"); do hold="$hold $pod"; done
   if [ -n "$hold" ]; then
     for pod in $hold; do
       kubectl -n "$LH_NS" delete pdb "$pod" --wait=false >/dev/null 2>&1
     done
-    ( for _ in $(seq 1 "${HOLD_SECONDS:-180}"); do
+    ( for _ in $(seq 1 "$HOLD_SECONDS"); do
         for pod in $hold; do
           kubectl -n "$LH_NS" delete pdb "$pod" --wait=false >/dev/null 2>&1
         done
         sleep 1
       done ) &
     holder=$!
+    log "holding ${hold# } for ${HOLD_SECONDS}s (drain timeout ${DRAIN_TIMEOUT})"
   fi
 
   talosctl upgrade --nodes "$target" --image "$IMAGE" --wait \
+    --drain-timeout "$DRAIN_TIMEOUT" \
     --timeout "${TIMEOUT:-20m}" 2>&1 | grep -viE 'unavailable, retrying' | tail -5 | sed 's/^/  /'
 
   [ -n "${holder:-}" ] && kill "$holder" 2>/dev/null
