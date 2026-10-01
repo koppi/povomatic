@@ -1,0 +1,24 @@
+# The installer image a node reinstalls itself from, pinned per Talos version.
+#
+# This is not the same thing as the version a node is currently running. Talos
+# writes whatever `talosctl upgrade --image` passes it, so an upgrade leaves this
+# pin behind, and the pin is what any later reinstall — a reprovision, a legacy
+# upgrade, a wiped disk — falls back to. Stale here means the node silently goes
+# back to an old release, or loses the extensions below if the pin names a
+# schematic built without them. Bump it in the same change as the upgrade.
+#
+# The schematic is what carries the system extensions. Verify what a schematic
+# actually contains before trusting it, since the ID is an opaque hash:
+#
+#   curl -s https://factory.talos.dev/schematics/<id>
+#
+# This one holds amd-ucode, amdgpu and iscsi-tools: the AMD GPU driver the
+# encoder pool needs for its h264_vaapi pass, the matching microcode, and the
+# iSCSI tools Longhorn uses for iscsi-backed storage.
+machine:
+  install:
+    image: factory.talos.dev/metal-installer/1e17720baa2217bdf64a7caa256011144fce07af5dd12ce18baed735789e7c81:v1.14.2
+# `wipe` is deliberately absent. It is not a per-version value — it says how this
+# node was provisioned, and the cluster is not uniform: cube08 has wipe: true, the
+# other eleven false. Pinning it here would quietly rewrite that one node's
+# behaviour the next time someone applies this file across the cluster.
