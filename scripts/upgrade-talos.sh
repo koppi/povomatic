@@ -190,6 +190,7 @@ for target in "${todo[@]}"; do
   # hold always the longer of the two, and the loop counts down so shortening the
   # drain actually shortens the hold.
   DRAIN_TIMEOUT=${DRAIN_TIMEOUT:-5m}
+  HOLD_SECONDS=${HOLD_SECONDS:-0}
 
   # The only form worth handling is <m>[<s>], or plain seconds; the hold just has to
   # outlast the drain, so an unrecognised value falls back to talosctl's own 5m
