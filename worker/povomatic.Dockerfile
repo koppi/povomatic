@@ -47,6 +47,7 @@ COPY worker/worker.py .
 COPY worker/api.py .
 COPY dashboard/app.py dashboard/
 COPY dashboard/templates/ dashboard/templates/
+COPY dashboard/static/ dashboard/static/
 
 # Run worker
 CMD ["python", "worker.py"]

@@ -753,6 +753,12 @@ def handle_unexpected(e):
 def index():
     return render_template('index.html')
 
+@app.route('/favicon.ico')
+def favicon():
+    # Browsers ask for this path unprompted, whatever the page's <link> tags
+    # say, so serve it rather than answer every visit with a 404.
+    return send_from_directory(app.static_folder, 'favicon.ico', max_age=86400)
+
 def start_background_tasks():
     # Daemon threads, not socketio.start_background_task: the latter's threads
     # are non-daemon and loop forever, which is what kept the process alive
