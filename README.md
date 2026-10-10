@@ -285,6 +285,15 @@ Socket.IO two to three times a second.
 - **Completed jobs** show the animated gif as a thumbnail, which links to the
   mp4. A job whose encode is still running says so and shows its progress, and
   cannot be deleted until the encode finishes.
+- **Graph** draws every job as a small dependency graph of its build steps: the
+  scene, the render, the mp4 and gif encodes that each wait on every frame, and
+  the files they leave. Jobs are grouped as running, queued and finished. A box
+  is coloured by state, a dashed one is waiting on an earlier step, and a file
+  that exists is a link. The frames are a single box with a count however many
+  there are, since a finished frame's row is deleted. Unlike the other panels it
+  is not pushed: the page fetches `/graph` every two seconds, and only while
+  that tab is open. `GRAPH_FINISHED_LIMIT` (default 20) sets how many recently
+  finished jobs it reads.
 - **Cancel** stops a render and removes its partial output. **Delete** removes a
   job and everything rendered for it.
 

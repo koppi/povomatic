@@ -194,6 +194,53 @@ See <https://www.gnu.org/licenses/> for details.
         .log-badge.ev-completed { border-color: var(--accent-green); color: var(--accent-green); }
         .log-badge.ev-failed { border-color: var(--accent-red); color: var(--accent-red); }
         .log-badge.ev-canceled, .log-badge.ev-deleted { border-color: var(--border); color: var(--text-muted); }
+
+        /* Graph tab. One card per job, drawn as boxes and arrows in SVG. --c
+           carries a state's colour to everything that shows it: the node's
+           border and bar, the card's tag, the legend swatch. */
+        .st-queued { --c: var(--accent-blue); }
+        .st-running { --c: var(--accent-orange); }
+        .st-done, .st-finished { --c: var(--accent-green); }
+        .st-failed { --c: var(--accent-red); }
+        .st-canceled, .st-waiting, .st-skipped { --c: var(--text-muted); }
+        .graph-legend { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 0.75rem; color: var(--text-muted); }
+        .graph-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+                          border: 1.5px solid var(--c); margin-right: 6px; vertical-align: -2px; }
+        .graph-legend i.dashed { border-style: dashed; }
+        /* The container is a one column grid, and a 1fr track will not shrink
+           below its content, so without this the page widens to fit the graph
+           and nothing scrolls inside the card. */
+        #graph-view { min-width: 0; }
+        .graph-card { background-color: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 4px; padding: 12px 16px; }
+        .graph-card:hover { background-color: var(--bg-hover); }
+        .graph-card .card-head { align-items: center; margin-bottom: 8px; }
+        .graph-card .state-tag { border-color: var(--c); color: var(--c); }
+        /* A graph is as wide as its columns, so a narrow screen scrolls it
+           sideways rather than shrinking the text to nothing. */
+        .graph-scroll { overflow-x: auto; }
+        .graph-svg { display: block; }
+        .gnode .box { fill: var(--bg-dark); stroke: var(--c, var(--border)); stroke-width: 1.5; }
+        .gnode.source { --c: var(--border); }
+        .gnode .label { fill: var(--text-main); font-size: 12px; font-weight: 600; }
+        .gnode .sub { fill: var(--text-muted); font-size: 10.5px; }
+        .gnode .bar-bg { fill: rgba(255,255,255,0.08); }
+        .gnode .bar { fill: var(--c); }
+        .gnode.st-waiting .box, .gnode.st-skipped .box { stroke-dasharray: 4 3; }
+        .gnode.st-waiting .label, .gnode.st-skipped .label { fill: var(--text-muted); }
+        .gnode.st-skipped { opacity: 0.55; }
+        .gnode.st-running .box { animation: pulse 1.4s ease-in-out infinite; }
+        a.gnode[href] { cursor: pointer; }
+        a.gnode[href]:hover .box { stroke-width: 2.5; }
+        a.gnode[href] .label { text-decoration: underline; }
+        .gedge path { fill: none; stroke: var(--border); stroke-width: 1.5; }
+        .gedge .head { fill: var(--border); stroke: none; }
+        .gedge.ok path { stroke: var(--accent-green); }
+        .gedge.ok .head { fill: var(--accent-green); stroke: none; }
+        .gedge.live path { stroke: var(--accent-orange); }
+        .gedge.live .head { fill: var(--accent-orange); stroke: none; }
+        .gedge.bad path { stroke: var(--accent-red); }
+        .gedge.bad .head { fill: var(--accent-red); stroke: none; }
+        @media (prefers-reduced-motion: reduce) { .gnode.st-running .box { animation: none; } }
     </style>
 </head>
 <body>
@@ -223,6 +270,7 @@ See <https://www.gnu.org/licenses/> for details.
 
     <div class="tabbar" role="tablist">
         <button class="tab on" data-tab="renders" role="tab" aria-selected="true">Renders</button>
+        <button class="tab" data-tab="graph" role="tab" aria-selected="false">Graph</button>
         <button class="tab" data-tab="log" role="tab" aria-selected="false">Log</button>
     </div>
 
@@ -239,6 +287,31 @@ See <https://www.gnu.org/licenses/> for details.
                 <div class="panel-body">
                     <div class="job-list" id="completed-jobs"><div class="empty-state">No completed jobs.</div></div>
                 </div>
+            </div>
+        </div>
+        <div class="content-area" id="graph-view" hidden>
+            <!-- Jobs do not depend on one another, they share the workers. What
+                 depends on what is the steps inside each job. -->
+            <div class="graph-legend">
+                <span class="st-queued"><i></i>queued</span>
+                <span class="st-running"><i></i>running</span>
+                <span class="st-done"><i></i>done</span>
+                <span class="st-failed"><i></i>failed</span>
+                <span class="st-canceled"><i></i>canceled</span>
+                <span class="st-waiting"><i class="dashed"></i>waiting on an earlier step</span>
+            </div>
+            <div class="empty-state" id="graph-error" hidden></div>
+            <div class="panel">
+                <div class="panel-header" id="graph-running-head">Running</div>
+                <div class="panel-body"><div class="job-list" id="graph-running"></div></div>
+            </div>
+            <div class="panel">
+                <div class="panel-header" id="graph-queued-head">Queued</div>
+                <div class="panel-body"><div class="job-list" id="graph-queued"></div></div>
+            </div>
+            <div class="panel">
+                <div class="panel-header" id="graph-finished-head">Finished</div>
+                <div class="panel-body"><div class="job-list" id="graph-finished"></div></div>
             </div>
         </div>
         <div class="content-area" id="log-view" hidden>
@@ -751,8 +824,6 @@ See <https://www.gnu.org/licenses/> for details.
         // "encoding gif" share the rendering colour.
         const eventClass = ev => `ev-${ev.split(' ')[0]}`;
 
-        let eventTimer = null;
-
         async function refreshEvents() {
             const tbody = document.getElementById('log-rows');
             const empty = document.getElementById('log-empty');
@@ -779,20 +850,152 @@ See <https://www.gnu.org/licenses/> for details.
             }
         }
 
+        // --- Graph tab ----------------------------------------------------
+        // Each job is a small dependency graph: its scene, the step that
+        // renders it, the encodes that wait on every frame, and the files they
+        // leave. The server says which boxes there are, where they sit and what
+        // state each is in; this only draws them. Like the log it is polled only
+        // while its tab is showing.
+        const G = {w: 190, h: 48, gapX: 52, gapY: 16, pad: 10};
+        const clip = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s;
+
+        // The boxes are built once per job and then only repainted: a rebuild
+        // every poll would drop a tooltip the pointer is resting on.
+        function buildGraphSvg(nodes, edges) {
+            const pos = {};
+            let right = 0, bottom = 0;
+            for (const n of nodes) {
+                const x = G.pad + n.col * (G.w + G.gapX), y = G.pad + n.row * (G.h + G.gapY);
+                pos[n.id] = {x, y};
+                right = Math.max(right, x + G.w);
+                bottom = Math.max(bottom, y + G.h);
+            }
+            const width = right + G.pad, height = bottom + G.pad;
+            const arrows = edges.map(([from, to]) => {
+                const a = pos[from], b = pos[to];
+                const x1 = a.x + G.w, y1 = a.y + G.h / 2, x2 = b.x, y2 = b.y + G.h / 2, dx = (x2 - x1) / 2;
+                return `<g class="gedge" data-from="${from}" data-to="${to}">
+                    <path d="M${x1} ${y1} C${x1 + dx} ${y1} ${x2 - dx} ${y2} ${x2 - 6} ${y2}"/>
+                    <path class="head" d="M${x2} ${y2} l-8 -4.5 v9 z"/></g>`;
+            }).join('');
+            const boxes = nodes.map(n => `
+                <a class="gnode ${n.kind}" data-id="${n.id}" target="_blank" rel="noopener"
+                   transform="translate(${pos[n.id].x} ${pos[n.id].y})">
+                    <title></title>
+                    <rect class="box" width="${G.w}" height="${G.h}" rx="${n.kind === 'artifact' ? 14 : 6}"/>
+                    <text class="label" x="12" y="20"></text>
+                    <text class="sub" x="12" y="35"></text>
+                    ${n.kind === 'step' ? `<rect class="bar-bg" x="12" y="${G.h - 9}" width="${G.w - 24}" height="3" rx="1.5"/>
+                    <rect class="bar" x="12" y="${G.h - 9}" width="0" height="3" rx="1.5"/>` : ''}
+                </a>`).join('');
+            return el(`<svg class="graph-svg" width="${width}" height="${height}"
+                            viewBox="0 0 ${width} ${height}">${arrows}${boxes}</svg>`);
+        }
+
+        // An arrow is green once what it leaves is done, orange while what it
+        // feeds is running, red when its source failed.
+        function edgeClass(from, to) {
+            if (from === 'failed') return 'bad';
+            if (from !== 'done') return '';
+            return to === 'running' ? 'live' : 'ok';
+        }
+
+        function paintGraph(svg, job) {
+            const state = {};
+            for (const n of job.nodes) {
+                state[n.id] = n.state;
+                const g = svg.querySelector(`.gnode[data-id="${n.id}"]`);
+                setAttr(g, 'class', `gnode ${n.kind} st-${n.state}`);
+                setText(g.querySelector('.label'), clip(n.label, 24));
+                setText(g.querySelector('.sub'), clip(n.sub, 32));
+                setText(g.querySelector('title'), n.title);
+                if (n.href) setAttr(g, 'href', n.href); else g.removeAttribute('href');
+                const bar = g.querySelector('.bar');
+                if (bar) setAttr(bar, 'width', String((G.w - 24) * (n.progress || 0) / 100));
+            }
+            for (const g of svg.querySelectorAll('.gedge')) {
+                setAttr(g, 'class', `gedge ${edgeClass(state[g.dataset.from], state[g.dataset.to])}`.trim());
+            }
+        }
+
+        function createGraphCard() {
+            return el(`
+                <div class="graph-card">
+                    <div class="card-head">
+                        <div class="job-name"></div>
+                        <span class="state-tag"></span>
+                    </div>
+                    <div class="graph-scroll"></div>
+                </div>`);
+        }
+
+        function updateGraphCard(node, job) {
+            setText(node.querySelector('.job-name'), `Job ${job.id} - ${job.scene}`);
+            const tag = node.querySelector('.state-tag');
+            setText(tag, job.state);
+            setAttr(tag, 'class', `state-tag st-${job.state}`);
+            const holder = node.querySelector('.graph-scroll');
+            const shape = JSON.stringify([job.nodes.map(n => [n.id, n.kind, n.col, n.row]), job.edges]);
+            if (holder.dataset.shape !== shape) {
+                holder.replaceChildren(buildGraphSvg(job.nodes, job.edges));
+                holder.dataset.shape = shape;
+            }
+            paintGraph(holder.firstElementChild, job);
+        }
+
+        const graphPanels = {
+            running: {title: 'Running', states: ['running']},
+            queued: {title: 'Queued', states: ['queued']},
+            finished: {title: 'Finished', states: ['finished', 'failed', 'canceled']},
+        };
+
+        async function refreshGraph() {
+            const err = document.getElementById('graph-error');
+            try {
+                const res = await fetch('/graph');
+                if (!res.ok) {
+                    err.textContent = 'Job graph unavailable.';
+                    err.hidden = false;
+                    return;
+                }
+                const {jobs} = await res.json();
+                err.hidden = true;
+                for (const [name, panel] of Object.entries(graphPanels)) {
+                    const mine = jobs.filter(j => panel.states.includes(j.state));
+                    setText(document.getElementById(`graph-${name}-head`), `${panel.title} (${mine.length})`);
+                    syncList(document.getElementById(`graph-${name}`), mine, j => j.id,
+                             createGraphCard, updateGraphCard, `No ${name} jobs.`);
+                }
+            } catch (e) {
+                err.textContent = 'Could not load the job graph.';
+                err.hidden = false;
+            }
+        }
+
+        // Each tab shows one view. A view that polls starts only while it is the
+        // one on screen, and stops the moment another is chosen.
+        const views = {
+            renders: {id: 'renders-view'},
+            graph: {id: 'graph-view', refresh: refreshGraph, every: 2000},
+            log: {id: 'log-view', refresh: refreshEvents, every: 3000},
+        };
+        let viewTimer = null;
+
         document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
-            const toLog = tab.dataset.tab === 'log';
             document.querySelectorAll('.tab').forEach(t => {
                 const on = t === tab;
                 t.classList.toggle('on', on);
                 t.setAttribute('aria-selected', on ? 'true' : 'false');
             });
-            document.getElementById('renders-view').hidden = toLog;
-            document.getElementById('log-view').hidden = !toLog;
-            clearInterval(eventTimer);
-            eventTimer = null;
-            if (toLog) {
-                refreshEvents();
-                eventTimer = setInterval(refreshEvents, 3000);
+            clearInterval(viewTimer);
+            viewTimer = null;
+            for (const [name, view] of Object.entries(views)) {
+                const shown = name === tab.dataset.tab;
+                document.getElementById(view.id).hidden = !shown;
+                if (shown && view.refresh) {
+                    view.refresh();
+                    viewTimer = setInterval(view.refresh, view.every);
+                }
             }
         }));
     </script>

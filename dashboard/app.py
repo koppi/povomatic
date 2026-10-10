@@ -718,6 +718,220 @@ def events():
          'type': r[3], 'event': r[4], 'detail': r[5]}
         for r in rows]})
 
+# How many of the most recently completed, failed or canceled jobs the Graph tab
+# reads; anything unfinished is shown on top of that. An animation whose encodes
+# are still running has completed its frames, so it counts here too while showing
+# under Running or Queued, and the Finished panel can hold a few fewer.
+GRAPH_FINISHED_LIMIT = int(os.environ.get('GRAPH_FINISHED_LIMIT', '20'))
+
+_GRAPH_COLS = ("id, scene_file, type, status, progress, frames, frames_rendered, "
+               "output_path, node_name, left(error_log, 300), created_at")
+# One select per branch, joined with UNION rather than OR'd together, for the
+# reason fetch_stats gives: each branch is an index lookup, the OR form a scan.
+# The third branch is an animation whose frames are done but whose encodes are
+# not, which would otherwise drop out of the list as soon as it counts as
+# completed, in the middle of the step the graph exists to show.
+GRAPH_JOBS_SQL = f"""
+    SELECT {_GRAPH_COLS} FROM jobs WHERE type IN ('still', 'animation') AND status = 'rendering'
+    UNION
+    SELECT {_GRAPH_COLS} FROM jobs WHERE type = 'still' AND status = 'pending'
+    UNION
+    SELECT {_GRAPH_COLS} FROM jobs WHERE type = 'animation' AND id IN (
+        SELECT CAST(scene_file AS INTEGER) FROM jobs
+        WHERE type = 'ffmpeg' AND status IN ('pending', 'rendering'))
+    UNION
+    (SELECT {_GRAPH_COLS} FROM jobs WHERE type IN ('still', 'animation')
+        AND status IN ('completed', 'failed', 'canceled') ORDER BY created_at DESC LIMIT %s)
+"""
+
+def _step_state(status):
+    """Graph state of a step, from the status of the row doing it."""
+    return {'pending': 'queued', 'rendering': 'running', 'completed': 'done',
+            'failed': 'failed', 'canceled': 'canceled'}.get(status, 'queued')
+
+def _step_sub(state, progress=0, node=None, waiting_on=None):
+    """The short line under a step's name."""
+    if state == 'running':
+        return ' · '.join(p for p in (f"{progress}%" if progress else 'starting', node) if p)
+    if state == 'waiting':
+        return f"waiting for {waiting_on}"
+    return {'queued': 'queued', 'done': 'done', 'failed': 'failed',
+            'canceled': 'canceled', 'skipped': 'not run'}[state]
+
+def _node(id, kind, col, row, label, sub, state, progress=None, href=None, detail=None):
+    """One box in a job's graph. col and row place it; row may be fractional so
+    a node can sit between the two it fans out to."""
+    title = f"{label}: {sub}" + (f"\n{detail}" if detail else '')
+    return {'id': id, 'kind': kind, 'col': col, 'row': row, 'label': label, 'sub': sub,
+            'state': state, 'progress': progress, 'href': href, 'title': title}
+
+def _progress(state, progress):
+    """What a step's bar shows: full once done, the reported figure while running."""
+    return 100 if state == 'done' else (progress or 0) if state == 'running' else 0
+
+def _artifact(id, col, row, label, step_state, path):
+    """A file a step produces: ready, with a link, once the step is done."""
+    if step_state == 'done':
+        return _node(id, 'artifact', col, row, label, 'ready', 'done', href=_output_rel(path))
+    if step_state in ('failed', 'canceled', 'skipped'):
+        return _node(id, 'artifact', col, row, label, 'not produced', 'skipped')
+    return _node(id, 'artifact', col, row, label, 'not yet', 'waiting')
+
+def still_graph(job):
+    """scene -> render -> png."""
+    state = _step_state(job['status'])
+    base = os.path.basename(job['scene'])
+    out = os.path.basename(job['output_path']) if job['output_path'] else 'output.png'
+    nodes = [
+        _node('src', 'source', 0, 0, base, f"job {job['id']} · still", 'done', detail=job['scene']),
+        _node('render', 'step', 1, 0, 'Render still',
+              _step_sub(state, job['progress'], job['node'] if state == 'running' else None),
+              state, _progress(state, job['progress']), detail=job['error'] if state == 'failed' else None),
+        _artifact('out', 2, 0, out, state, job['output_path']),
+    ]
+    return {'state': 'finished' if state == 'done' else state, 'nodes': nodes,
+            'edges': [['src', 'render'], ['render', 'out']]}
+
+def animation_graph(job, frame_counts, encodes):
+    """scene -> render frames -> (encode mp4, encode gif) -> files.
+
+    The frames are one node however many there are: a finished frame's row is
+    deleted, so there is nothing to draw one for, and a long animation has
+    thousands. The two encodes are independent of each other and both wait on
+    every frame, which is the dependency that matters here.
+    """
+    stem = os.path.splitext(os.path.basename(job['scene']))[0]
+    total, done = job['frames'] or 0, job['frames_rendered'] or 0
+    running, queued = frame_counts.get('rendering', 0), frame_counts.get('pending', 0)
+
+    if done >= total:
+        render = 'done'
+    elif job['status'] == 'canceled':
+        render = 'canceled'
+    elif job['status'] == 'failed':
+        render = 'failed'
+    elif running:
+        render = 'running'
+    else:
+        render = 'queued'
+
+    parts = [f"{done}/{total} frames"]
+    if render == 'running':
+        parts.append(f"{running} running")
+    elif render in ('queued', 'failed', 'canceled'):
+        parts.append(render)
+    render_detail = f"{done} of {total} frames rendered, {running} running, {queued} queued"
+    if render == 'failed' and job['error']:
+        render_detail += "\n" + job['error']
+
+    # With no row for an encode yet it is either still to come or never will be.
+    blocked = 'skipped' if job['status'] in ('canceled', 'failed') else 'waiting'
+    steps, encode_nodes, file_nodes = [render], [], []
+    for row, stage in ((0, 'mp4'), (1, 'gif')):
+        # A row queued before the encode was split carries no stage and does both.
+        enc = encodes.get(stage) or encodes.get(None)
+        if enc:
+            state, path = _step_state(enc['status']), enc['output_path'] or job['output_path']
+            sub = _step_sub(state, enc['progress'], enc['node'] if state == 'running' else None)
+            detail = enc['error'] if state == 'failed' else None
+        elif job['output_path']:
+            # Finished before encodes had rows to read it from.
+            state, path, sub, detail = 'done', job['output_path'], 'done', None
+        else:
+            state, path, detail = blocked, None, None
+            sub = _step_sub(state, waiting_on='all frames')
+        steps.append(state)
+        encode_nodes.append(_node(stage, 'step', 2, row, f"Encode {stage}", sub, state,
+                                  _progress(state, enc['progress'] if enc else 0), detail=detail))
+        # Both outputs sit beside the mp4, so the gif's is found by its suffix.
+        file_path = os.path.splitext(path)[0] + '.' + stage if path else None
+        file_nodes.append(_artifact(f"{stage}-file", 3, row, f"{stem}.{stage}", state, file_path))
+
+    nodes = [
+        _node('src', 'source', 0, 0.5, os.path.basename(job['scene']),
+              f"job {job['id']} · animation", 'done', detail=job['scene']),
+        _node('render', 'step', 1, 0.5, 'Render frames', ' · '.join(parts), render,
+              round(100 * done / total) if total else 0, detail=render_detail),
+    ] + encode_nodes + file_nodes
+
+    if job['status'] == 'canceled' or 'canceled' in steps:
+        state = 'canceled'
+    elif job['status'] == 'failed' or 'failed' in steps:
+        state = 'failed'
+    elif all(s == 'done' for s in steps):
+        state = 'finished'
+    elif 'running' in steps:
+        state = 'running'
+    else:
+        state = 'queued'
+    return {'state': state, 'nodes': nodes,
+            'edges': [['src', 'render'], ['render', 'mp4'], ['render', 'gif'],
+                      ['mp4', 'mp4-file'], ['gif', 'gif-file']]}
+
+@app.route('/graph')
+def graph():
+    """Every unfinished job and the most recent finished ones, each as a small
+    dependency graph of the steps that build it.
+
+    Polled while the Graph tab is open, like /events, rather than folded into
+    the stats push. The steps are not rows of their own except for the encodes:
+    a still is one row, and an animation is a parent whose frame rows vanish as
+    they succeed, so the frames are summarised from the parent's counter and the
+    handful of pending and rendering rows still left.
+    """
+    try:
+        conn = stats_connection()
+        with conn.cursor() as cur:
+            cur.execute(GRAPH_JOBS_SQL, (GRAPH_FINISHED_LIMIT,))
+            jobs = [{'id': r[0], 'scene': r[1], 'type': r[2], 'status': r[3], 'progress': r[4],
+                     'frames': r[5], 'frames_rendered': r[6], 'output_path': r[7],
+                     'node': r[8], 'error': r[9], 'created': r[10]} for r in cur.fetchall()]
+            parents = [str(j['id']) for j in jobs if j['type'] == 'animation']
+            frame_counts, encodes = {}, {}
+            if parents:
+                # Pending and rendering are counted from their own partial
+                # indexes. A failed frame is not counted: nothing indexes them,
+                # and the parent already goes to failed once none are left.
+                cur.execute("""
+                    SELECT scene_file, status, count(*) FROM jobs
+                    WHERE type = 'animation-frame' AND status = 'pending' AND scene_file = ANY(%s)
+                    GROUP BY scene_file, status
+                    UNION ALL
+                    SELECT scene_file, status, count(*) FROM jobs
+                    WHERE type = 'animation-frame' AND status = 'rendering' AND scene_file = ANY(%s)
+                    GROUP BY scene_file, status
+                """, (parents, parents))
+                for parent, status, n in cur.fetchall():
+                    frame_counts.setdefault(int(parent), {})[status] = n
+                cur.execute("""
+                    SELECT scene_file, stage, status, progress, node_name, output_path, left(error_log, 300)
+                    FROM jobs WHERE type = 'ffmpeg' AND scene_file = ANY(%s) ORDER BY id
+                """, (parents,))
+                for parent, stage, status, progress, node, path, error in cur.fetchall():
+                    # Ordered by id, so a pass queued again replaces the earlier row.
+                    encodes.setdefault(int(parent), {})[stage] = {
+                        'status': status, 'progress': progress, 'node': node,
+                        'output_path': path, 'error': error}
+        conn.commit()
+    except psycopg2.Error as e:
+        drop_stats_connection()
+        logger.error(f"Error reading the job graph: {e}")
+        return jsonify({'error': 'unavailable'}), 503
+
+    out = []
+    for job in jobs:
+        g = (animation_graph(job, frame_counts.get(job['id'], {}), encodes.get(job['id'], {}))
+             if job['type'] == 'animation' else still_graph(job))
+        out.append({'id': job['id'], 'scene': job['scene'], 'type': job['type'],
+                    'created': job['created'], **g})
+    # Unfinished work in queue order, then the finished jobs, newest first.
+    finished = ('finished', 'failed', 'canceled')
+    out.sort(key=lambda j: (j['state'] in finished,
+                            -j['created'].timestamp() if j['state'] in finished else j['id']))
+    for j in out:
+        j['created'] = j['created'].isoformat()
+    return jsonify({'jobs': out})
+
 @app.route('/healthz')
 def healthz():
     """Liveness: a stats rebuild has succeeded within LIVE_MAX_AGE.
