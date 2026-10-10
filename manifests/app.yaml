@@ -1,3 +1,7 @@
+# Storage is the in-cluster NFS server (manifests/nfs-server.yaml). It is
+# addressed by its pinned LoadBalancer IP, not by name: kubelet mounts NFS from
+# the node, which cannot resolve cluster DNS. The server exports its volume as
+# the NFSv4 root, so paths here start at /povray, not /nfs/povray.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -8,8 +12,8 @@ spec:
   accessModes:
     - ReadWriteMany
   nfs:
-    server: cube00.fritz.box
-    path: /nfs/povray/output
+    server: 192.168.178.200
+    path: /povray/output
 ---
 apiVersion: v1
 kind: PersistentVolume
@@ -21,8 +25,8 @@ spec:
   accessModes:
     - ReadWriteMany
   nfs:
-    server: cube00.fritz.box
-    path: /nfs/povray/input
+    server: 192.168.178.200
+    path: /povray/input
 ---
 apiVersion: v1
 kind: PersistentVolume
@@ -34,8 +38,8 @@ spec:
   accessModes:
     - ReadOnlyMany
   nfs:
-    server: cube00.fritz.box
-    path: /nfs/povray/assets
+    server: 192.168.178.200
+    path: /povray/assets
     readOnly: true
 ---
 apiVersion: v1

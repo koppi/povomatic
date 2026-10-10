@@ -93,14 +93,16 @@ only in the command.
 
 ### 2. Storage
 
-Update the three PersistentVolumes in `manifests/app.yaml` with your NFS server
-and export paths:
+The three PersistentVolumes in `manifests/app.yaml` point at the in-cluster NFS
+server from `manifests/nfs-server.yaml` (apply that first; it is reachable at the
+pinned address `192.168.178.200`). To use a different NFS server, change the
+server and paths:
 
 | PV | Default path | Mounted at | Contents |
 |---|---|---|---|
-| `nfs-input-pv` | `/nfs/povray/input` | `/app/input` | `.pov` scenes and their textures |
-| `nfs-output-pv` | `/nfs/povray/output` | `/app/output` | rendered frames and videos, as `job_<id>/` |
-| `nfs-assets-pv` | `/nfs/povray/assets` | `/app/assets` (read only) | shared `.inc` includes and texture library |
+| `nfs-input-pv` | `/povray/input` | `/app/input` | `.pov` scenes and their textures |
+| `nfs-output-pv` | `/povray/output` | `/app/output` | rendered frames and videos, as `job_<id>/` |
+| `nfs-assets-pv` | `/povray/assets` | `/app/assets` (read only) | shared `.inc` includes and texture library |
 
 Both `/app/input` and `/app/assets` are passed to povray as library paths
 (`+L`), because povray resolves `#include` and `image_map` against the working

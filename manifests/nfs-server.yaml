@@ -109,6 +109,11 @@ kind: Service
 metadata:
   name: nfs-server
   namespace: nfs
+  annotations:
+    # Pinned because the povomatic PersistentVolumes mount this address
+    # directly. It is the first address of extended-pool, which the router's
+    # DHCP range also covers, so reserve it on the FRITZ!Box like .199.
+    metallb.universe.tf/loadBalancerIPs: 192.168.178.200
 spec:
   type: LoadBalancer
   selector:
