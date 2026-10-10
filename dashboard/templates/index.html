@@ -1107,7 +1107,7 @@ See <https://www.gnu.org/licenses/> for details.
         }
 
         function updateGraphCard(node, job) {
-            setText(node.querySelector('.job-name'), `Job ${job.id} - ${job.scene}`);
+            setText(node.querySelector('.job-name'), `Job ${job.id} - ${baseName(job.scene)}`);
             setIcon(node.querySelector('.ico-slot'), job.state);
             setClock(node.querySelector('.elapsed'), job.started);
             const tag = node.querySelector('.state-tag');
