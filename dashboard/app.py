@@ -149,6 +149,18 @@ def aggregate_frame_rate(parent_ids):
                 rate += progressed / elapsed
     return rate
 
+# When each job in flight was first seen running, for the elapsed clocks. A row
+# records no start time of its own: claimed_at is a lease the worker refreshes
+# every thirty seconds, so it says when the job last proved it was alive, not
+# when it began. This is as close as can be had, and it begins again from the
+# dashboard's own start if the dashboard is restarted in the middle of a render.
+_started = {}
+_started_lock = threading.Lock()
+
+def started_at(job_id):
+    with _started_lock:
+        return _started.get(job_id)
+
 _dir_cache = {}
 _dir_cache_lock = threading.Lock()
 # Job ids a caller wanted a listing for and did not get a fresh one.
@@ -319,7 +331,11 @@ def emit_stats(stats):
     with push_lock:
         now = time.time()
         if now - last_push_time >= PUSH_MIN_INTERVAL:
-            socketio.emit('stats', stats)
+            # The server's clock rides along on the push rather than inside the
+            # payload, which is compared to decide whether anything changed and
+            # would otherwise differ every time. The page uses it to keep its
+            # elapsed clocks right when its own clock is off.
+            socketio.emit('stats', {**stats, 'now': time.time()})
             last_push_time = now
             return True
     return False
@@ -344,13 +360,14 @@ def _fetch_stats(conn):
                 # of a long animation runs for minutes and was invisible on the
                 # page, since its animation has already left the active groups.
                 cur.execute("""
-                    SELECT e.id, e.scene_file, e.progress, e.node_name, p.scene_file, e.stage
+                    SELECT e.id, e.scene_file, e.progress, e.node_name, p.scene_file, e.stage, e.status
                     FROM jobs e LEFT JOIN jobs p ON p.id = CAST(e.scene_file AS INTEGER)
                     WHERE e.type = 'ffmpeg' AND e.status IN ('pending', 'rendering')
                     ORDER BY e.id
                 """)
                 encodes = [{'id': r[0], 'parent': r[1], 'progress': r[2],
-                            'node': r[3], 'scene': r[4], 'stage': r[5]} for r in cur.fetchall()]
+                            'node': r[3], 'scene': r[4], 'stage': r[5], 'status': r[6]}
+                           for r in cur.fetchall()]
                 encoding = len(encodes)
                 # Fetch performance stats
                 # povray_time on an animation is the render cost summed over every
@@ -376,11 +393,11 @@ def _fetch_stats(conn):
                 # scanned the whole table, 215ms against 36k rows, where each
                 # branch on its own is an index lookup. Same rows, 1ms.
                 cur.execute("""
-                    SELECT id, scene_file, type, progress, status, output_path, error_log, frames, frames_rendered, current_frame, povray_time, node_name, stage
+                    SELECT id, scene_file, type, progress, status, output_path, error_log, frames, frames_rendered, current_frame, povray_time, node_name, stage, EXTRACT(EPOCH FROM created_at)
                     FROM jobs
                     WHERE status = 'rendering'
                     UNION
-                    SELECT id, scene_file, type, progress, status, output_path, error_log, frames, frames_rendered, current_frame, povray_time, node_name, stage
+                    SELECT id, scene_file, type, progress, status, output_path, error_log, frames, frames_rendered, current_frame, povray_time, node_name, stage, EXTRACT(EPOCH FROM created_at)
                     FROM jobs
                     WHERE type = 'animation'
                       AND id IN (SELECT DISTINCT CAST(scene_file AS INTEGER) FROM jobs WHERE status = 'rendering' AND type = 'animation-frame')
@@ -393,7 +410,7 @@ def _fetch_stats(conn):
                 # animation creates thousands of them at once, which pushed
                 # every finished job out of the twenty most recent rows and left
                 # the completed panel empty for the whole render.
-                cur.execute("SELECT id, scene_file, type, progress, status, output_path, error_log, frames, frames_rendered, current_frame, povray_time, node_name, stage FROM jobs WHERE status != 'rendering' AND type != 'animation-frame' ORDER BY created_at DESC LIMIT 20")
+                cur.execute("SELECT id, scene_file, type, progress, status, output_path, error_log, frames, frames_rendered, current_frame, povray_time, node_name, stage, EXTRACT(EPOCH FROM created_at) FROM jobs WHERE status != 'rendering' AND type != 'animation-frame' ORDER BY created_at DESC LIMIT 20")
                 history_jobs = cur.fetchall()
 
         def map_job(j):
@@ -402,11 +419,24 @@ def _fetch_stats(conn):
                 'status': j[4], 'output_path': j[5], 'error_log': j[6], 
                 'frames': j[7], 'frames_rendered': j[8], 'current_frame': j[9], 
                 'povray_time': float(j[10]) if j[10] is not None else 0.0,
-                'node': j[11], 'stage': j[12]
+                'node': j[11], 'stage': j[12],
+                'created': float(j[13]) if j[13] is not None else None
             }
 
         all_active = [map_job(j) for j in active_jobs]
         history = [map_job(j) for j in history_jobs]
+
+        now = time.time()
+        with _started_lock:
+            # An encode waiting for a worker is not yet running, so it gets no
+            # clock until it is: the wait would otherwise be counted as run time.
+            live = {j['id'] for j in all_active} | {e['id'] for e in encodes if e['status'] == 'rendering'}
+            for job_id in live:
+                _started.setdefault(job_id, now)
+            for gone in [k for k in _started if k not in live]:
+                del _started[gone]
+            for item in all_active + encodes:
+                item['started'] = _started.get(item['id'])
         
         # Group rendering animation-frame jobs by parent ID
         animation_groups = {}
@@ -424,6 +454,7 @@ def _fetch_stats(conn):
                 animation_groups[parent_id]['frames_rendered'] = j['frames_rendered']
                 animation_groups[parent_id]['total_frames'] = j['frames']
                 animation_groups[parent_id]['scene_file'] = j['scene']
+                animation_groups[parent_id]['created'] = j['created']
 
         # Live preview of the most recent frame each animation has produced.
         for parent_id, group in animation_groups.items():
@@ -725,7 +756,7 @@ def events():
 GRAPH_FINISHED_LIMIT = int(os.environ.get('GRAPH_FINISHED_LIMIT', '20'))
 
 _GRAPH_COLS = ("id, scene_file, type, status, progress, frames, frames_rendered, "
-               "output_path, node_name, left(error_log, 300), created_at")
+               "output_path, node_name, left(error_log, 300), created_at, povray_time")
 # One select per branch, joined with UNION rather than OR'd together, for the
 # reason fetch_stats gives: each branch is an index lookup, the OR form a scan.
 # The third branch is an animation whose frames are done but whose encodes are
@@ -758,12 +789,16 @@ def _step_sub(state, progress=0, node=None, waiting_on=None):
     return {'queued': 'queued', 'done': 'done', 'failed': 'failed',
             'canceled': 'canceled', 'skipped': 'not run'}[state]
 
-def _node(id, kind, col, row, label, sub, state, progress=None, href=None, detail=None):
+def _node(id, kind, col, row, label, sub, state, progress=None, href=None, detail=None,
+          started=None, took=None):
     """One box in a job's graph. col and row place it; row may be fractional so
-    a node can sit between the two it fans out to."""
+    a node can sit between the two it fans out to. started is when a running
+    step began, which the page counts up from; took is how long a finished one
+    ran."""
     title = f"{label}: {sub}" + (f"\n{detail}" if detail else '')
     return {'id': id, 'kind': kind, 'col': col, 'row': row, 'label': label, 'sub': sub,
-            'state': state, 'progress': progress, 'href': href, 'title': title}
+            'state': state, 'progress': progress, 'href': href, 'title': title,
+            'started': started, 'took': took}
 
 def _progress(state, progress):
     """What a step's bar shows: full once done, the reported figure while running."""
@@ -786,7 +821,9 @@ def still_graph(job):
         _node('src', 'source', 0, 0, base, f"job {job['id']} · still", 'done', detail=job['scene']),
         _node('render', 'step', 1, 0, 'Render still',
               _step_sub(state, job['progress'], job['node'] if state == 'running' else None),
-              state, _progress(state, job['progress']), detail=job['error'] if state == 'failed' else None),
+              state, _progress(state, job['progress']), detail=job['error'] if state == 'failed' else None,
+              started=started_at(job['id']) if state == 'running' else None,
+              took=job['povray_time'] if state == 'done' else None),
         _artifact('out', 2, 0, out, state, job['output_path']),
     ]
     return {'state': 'finished' if state == 'done' else state, 'nodes': nodes,
@@ -834,15 +871,18 @@ def animation_graph(job, frame_counts, encodes):
             state, path = _step_state(enc['status']), enc['output_path'] or job['output_path']
             sub = _step_sub(state, enc['progress'], enc['node'] if state == 'running' else None)
             detail = enc['error'] if state == 'failed' else None
+            started = started_at(enc['id']) if state == 'running' else None
+            took = enc['took'] if state == 'done' else None
         elif job['output_path']:
             # Finished before encodes had rows to read it from.
-            state, path, sub, detail = 'done', job['output_path'], 'done', None
+            state, path, sub, detail, started, took = 'done', job['output_path'], 'done', None, None, None
         else:
-            state, path, detail = blocked, None, None
+            state, path, detail, started, took = blocked, None, None, None, None
             sub = _step_sub(state, waiting_on='all frames')
         steps.append(state)
         encode_nodes.append(_node(stage, 'step', 2, row, f"Encode {stage}", sub, state,
-                                  _progress(state, enc['progress'] if enc else 0), detail=detail))
+                                  _progress(state, enc['progress'] if enc else 0), detail=detail,
+                                  started=started, took=took))
         # Both outputs sit beside the mp4, so the gif's is found by its suffix.
         file_path = os.path.splitext(path)[0] + '.' + stage if path else None
         file_nodes.append(_artifact(f"{stage}-file", 3, row, f"{stem}.{stage}", state, file_path))
@@ -851,7 +891,8 @@ def animation_graph(job, frame_counts, encodes):
         _node('src', 'source', 0, 0.5, os.path.basename(job['scene']),
               f"job {job['id']} · animation", 'done', detail=job['scene']),
         _node('render', 'step', 1, 0.5, 'Render frames', ' · '.join(parts), render,
-              round(100 * done / total) if total else 0, detail=render_detail),
+              round(100 * done / total) if total else 0, detail=render_detail,
+              started=job['created'].timestamp() if render == 'running' else None),
     ] + encode_nodes + file_nodes
 
     if job['status'] == 'canceled' or 'canceled' in steps:
@@ -885,7 +926,8 @@ def graph():
             cur.execute(GRAPH_JOBS_SQL, (GRAPH_FINISHED_LIMIT,))
             jobs = [{'id': r[0], 'scene': r[1], 'type': r[2], 'status': r[3], 'progress': r[4],
                      'frames': r[5], 'frames_rendered': r[6], 'output_path': r[7],
-                     'node': r[8], 'error': r[9], 'created': r[10]} for r in cur.fetchall()]
+                     'node': r[8], 'error': r[9], 'created': r[10],
+                     'povray_time': float(r[11]) if r[11] is not None else None} for r in cur.fetchall()]
             parents = [str(j['id']) for j in jobs if j['type'] == 'animation']
             frame_counts, encodes = {}, {}
             if parents:
@@ -904,14 +946,16 @@ def graph():
                 for parent, status, n in cur.fetchall():
                     frame_counts.setdefault(int(parent), {})[status] = n
                 cur.execute("""
-                    SELECT scene_file, stage, status, progress, node_name, output_path, left(error_log, 300)
+                    SELECT scene_file, stage, status, progress, node_name, output_path, left(error_log, 300),
+                           id, ffmpeg_time
                     FROM jobs WHERE type = 'ffmpeg' AND scene_file = ANY(%s) ORDER BY id
                 """, (parents,))
-                for parent, stage, status, progress, node, path, error in cur.fetchall():
+                for parent, stage, status, progress, node, path, error, enc_id, took in cur.fetchall():
                     # Ordered by id, so a pass queued again replaces the earlier row.
                     encodes.setdefault(int(parent), {})[stage] = {
                         'status': status, 'progress': progress, 'node': node,
-                        'output_path': path, 'error': error}
+                        'output_path': path, 'error': error, 'id': enc_id,
+                        'took': float(took) if took is not None else None}
         conn.commit()
     except psycopg2.Error as e:
         drop_stats_connection()
@@ -923,14 +967,18 @@ def graph():
         g = (animation_graph(job, frame_counts.get(job['id'], {}), encodes.get(job['id'], {}))
              if job['type'] == 'animation' else still_graph(job))
         out.append({'id': job['id'], 'scene': job['scene'], 'type': job['type'],
-                    'created': job['created'], **g})
+                    'created': job['created'],
+                    # Counted from submission while it is in progress; once it is
+                    # finished there is no end time recorded to count to.
+                    'started': job['created'].timestamp() if g['state'] == 'running' else None,
+                    **g})
     # Unfinished work in queue order, then the finished jobs, newest first.
     finished = ('finished', 'failed', 'canceled')
     out.sort(key=lambda j: (j['state'] in finished,
                             -j['created'].timestamp() if j['state'] in finished else j['id']))
     for j in out:
         j['created'] = j['created'].isoformat()
-    return jsonify({'jobs': out})
+    return jsonify({'jobs': out, 'now': time.time()})
 
 @app.route('/healthz')
 def healthz():

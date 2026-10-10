@@ -65,9 +65,17 @@ See <https://www.gnu.org/licenses/> for details.
         .stat-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; }
         .stat-subtext { font-size: 0.7rem; color: #666; margin-top: 4px; }
         
-        .content-area { display: flex; flex-direction: column; gap: 24px; }
+        /* The container is a one column grid, and a 1fr track will not shrink
+           below its content, so without min-width the page widens to fit
+           whatever is widest (a graph, or a row of icon, thumbnail, tag and
+           button) and a phone scrolls sideways. The rows wrap instead. */
+        .content-area { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
         .job-list { display: flex; flex-direction: column; gap: 12px; }
-        .group-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+        /* minmax(0, ...) and min-width: 0 let a card be as narrow as its column
+           instead of as wide as its header, whose icon, clock, tag and button
+           would otherwise push the Cancel button out past the panel on a phone. */
+        .group-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+        .group-card { min-width: 0; }
         @media (min-width: 768px) {
             .group-grid { grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); }
         }
@@ -99,8 +107,8 @@ See <https://www.gnu.org/licenses/> for details.
         
         .job-row { display: flex; flex-direction: column; background-color: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 4px; padding: 16px; transition: background 0.2s; }
         .job-row:hover { background-color: var(--bg-hover); }
-        .job-header { display: flex; justify-content: space-between; align-items: center; }
-        .job-info { display: flex; align-items: center; gap: 16px; }
+        .job-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+        .job-info { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; min-width: 0; }
         .job-icon { width: 8px; height: 8px; border-radius: 50%; background-color: var(--accent-orange); box-shadow: 0 0 8px var(--accent-orange); }
         .job-icon.done { background-color: var(--accent-green); box-shadow: none; }
         .job-details { display: flex; flex-direction: column; }
@@ -207,10 +215,6 @@ See <https://www.gnu.org/licenses/> for details.
         .graph-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px;
                           border: 1.5px solid var(--c); margin-right: 6px; vertical-align: -2px; }
         .graph-legend i.dashed { border-style: dashed; }
-        /* The container is a one column grid, and a 1fr track will not shrink
-           below its content, so without this the page widens to fit the graph
-           and nothing scrolls inside the card. */
-        #graph-view { min-width: 0; }
         .graph-card { background-color: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 4px; padding: 12px 16px; }
         .graph-card:hover { background-color: var(--bg-hover); }
         .graph-card .card-head { align-items: center; margin-bottom: 8px; }
@@ -240,10 +244,52 @@ See <https://www.gnu.org/licenses/> for details.
         .gedge.live .head { fill: var(--accent-orange); stroke: none; }
         .gedge.bad path { stroke: var(--accent-red); }
         .gedge.bad .head { fill: var(--accent-red); stroke: none; }
-        @media (prefers-reduced-motion: reduce) { .gnode.st-running .box { animation: none; } }
+
+        /* Status icons, as on a GitHub Actions run: a ring that turns while work
+           is in progress, and a distinct mark for each way it can end. They take
+           their colour from the state class, so one rule serves every place
+           that shows a state. */
+        .ico-slot { display: inline-flex; flex-shrink: 0; }
+        .ico { width: 16px; height: 16px; display: block; flex-shrink: 0; color: var(--c, var(--text-muted)); }
+        .ico.enc { --c: var(--accent-green); }
+        .ico.st-running { animation: spin 0.9s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .head-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+        .group-card .card-head { align-items: center; }
+        /* Elapsed time sits beside what it times and is kept current by a
+           one second ticker, so it is empty (and takes no room) when there is
+           nothing to count. */
+        .elapsed { font-size: 0.78rem; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .elapsed:empty { display: none; }
+        .frame-node { display: flex; align-items: baseline; gap: 6px; }
+        .frame-node .node-name { margin-left: auto; }
+        .gnode .gicon { color: var(--c, var(--text-muted)); }
+        .gnode.st-running .gicon { transform-box: fill-box; transform-origin: center; animation: spin 0.9s linear infinite; }
+        .gnode .time { fill: var(--text-muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+        /* New cards ease in and a graph step flashes in its new colour when its
+           state changes, so a change is seen as it happens rather than found. */
+        @keyframes enter { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: none; } }
+        .group-card, .job-row, .graph-card { animation: enter 0.25s ease-out; }
+        @keyframes gflash { from { fill: color-mix(in srgb, var(--c) 40%, var(--bg-dark)); } to { fill: var(--bg-dark); } }
+        .gnode.flash .box { animation: gflash 0.8s ease-out; }
+        .btn.busy { opacity: 0.6; cursor: progress; }
+        .job-row.leaving { opacity: 0.45; transition: opacity 0.3s; }
+        @media (prefers-reduced-motion: reduce) {
+            .gnode.st-running .box, .gnode.st-running .gicon, .ico.st-running,
+            .group-card, .job-row, .graph-card, .gnode.flash .box { animation: none; }
+        }
     </style>
 </head>
 <body>
+    <!-- Status icons, drawn once and referenced with <use> wherever a state is shown. -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+        <symbol id="i-queued" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 4.6V8l2.3 1.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+        <symbol id="i-running" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/><path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+        <symbol id="i-done" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M4.8 8.2l2.3 2.3 4.2-4.6" fill="none" stroke="#171719" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+        <symbol id="i-failed" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8" stroke="#171719" stroke-width="1.8" stroke-linecap="round"/></symbol>
+        <symbol id="i-canceled" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4.2 11.8l7.6-7.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+        <symbol id="i-waiting" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.6 2.4"/></symbol>
+    </svg>
     <div class="navbar">
         <h1><img class="logo" src="/static/icon.svg" alt="" width="28" height="28">pov<span>o</span>matic</h1>
         <div class="navmetrics">
@@ -331,21 +377,79 @@ See <https://www.gnu.org/licenses/> for details.
     </div>
 
     <script>
-        async function post(url, body) {
-            const res = await fetch(url, {method: 'POST'});
-            if (!res.ok) alert(`${body} failed: ${res.status} ${res.statusText}`);
-            return res.ok;
+        // An action is acknowledged the moment it is confirmed rather than when
+        // the next push shows its result: the button says what it is doing and
+        // cannot be pressed twice, and goes back to normal if the request fails.
+        async function post(url, body, btn, busyText) {
+            const idle = btn ? btn.textContent : '';
+            if (btn) { btn.disabled = true; btn.classList.add('busy'); btn.textContent = busyText; }
+            try {
+                const res = await fetch(url, {method: 'POST'});
+                if (res.ok) return true;
+                alert(`${body} failed: ${res.status} ${res.statusText}`);
+            } catch (e) {
+                alert(`${body} failed: ${e.message}`);
+            }
+            if (btn) { btn.disabled = false; btn.classList.remove('busy'); btn.textContent = idle; }
+            return false;
         }
 
-        async function cancelJob(id) {
+        async function cancelJob(id, btn) {
             if (!confirm(`Cancel job ${id}? Renders in progress will stop and the frames already produced will be deleted.`)) return;
-            await post(`/jobs/${id}/cancel`, 'Cancel');
+            await post(`/jobs/${id}/cancel`, 'Cancel', btn, 'Canceling…');
         }
 
-        async function deleteJob(id) {
+        async function deleteJob(id, btn) {
             if (!confirm(`Delete job ${id}? This permanently removes its rendered frames and video from disk.`)) return;
-            await post(`/jobs/${id}/delete`, 'Delete');
+            const row = btn.closest('.job-row');
+            row.classList.add('leaving');
+            if (!await post(`/jobs/${id}/delete`, 'Delete', btn, 'Deleting…')) row.classList.remove('leaving');
         }
+
+        // Status icons come from the sprite at the top of the page. A job-level
+        // "finished" and a step's "skipped" borrow the icons of "done" and
+        // "waiting", and a slot is only rewritten when its state changes so the
+        // spinner is not restarted on every push.
+        const ICON_FOR = {finished: 'done', skipped: 'waiting'};
+        const iconRef = state => `#i-${ICON_FOR[state] || state}`;
+        function setIcon(slot, state, extra = '') {
+            const key = state + extra;
+            if (slot.dataset.icon === key) return;
+            slot.dataset.icon = key;
+            slot.innerHTML = `<svg class="ico st-${state} ${extra}"><use href="${iconRef(state)}"/></svg>`;
+        }
+
+        // Elapsed clocks. A node with data-since is kept current by the ticker
+        // below; without it, it shows a fixed duration or nothing. The server's
+        // clock arrives with every push and is used for the difference, so a
+        // browser whose own clock is a little off still counts correctly.
+        let clockOffset = 0;
+        const nowSec = () => Date.now() / 1000 + clockOffset;
+        const syncClock = serverNow => { if (serverNow) clockOffset = serverNow - Date.now() / 1000; };
+
+        function formatElapsed(seconds) {
+            const s = Math.max(0, Math.floor(seconds));
+            if (s < 60) return `${s}s`;
+            const m = Math.floor(s / 60);
+            if (m < 60) return `${m}m ${s % 60}s`;
+            return `${Math.floor(m / 60)}h ${m % 60}m`;
+        }
+
+        function setClock(node, since, took) {
+            if (since) {
+                node.dataset.since = String(since);
+                setText(node, formatElapsed(nowSec() - since));
+            } else {
+                delete node.dataset.since;
+                setText(node, took != null ? formatDuration(took) : '');
+            }
+        }
+
+        setInterval(() => {
+            for (const node of document.querySelectorAll('[data-since]')) {
+                setText(node, formatElapsed(nowSec() - Number(node.dataset.since)));
+            }
+        }, 1000);
 
         // Rebuilding innerHTML on every push discards and recreates the whole
         // list, which is what makes the page flicker and restarts any animated
@@ -356,6 +460,10 @@ See <https://www.gnu.org/licenses/> for details.
             t.innerHTML = html.trim();
             return t.content.firstElementChild;
         }
+
+        // Scenes are submitted with their directory ("10-dice/dice.pov"), which
+        // tells a card nothing the job number does not.
+        const baseName = path => String(path).split('/').pop();
 
         function setText(node, text) {
             if (node.textContent !== text) node.textContent = text;
@@ -538,13 +646,49 @@ See <https://www.gnu.org/licenses/> for details.
             if (tile && !tile.contains(evt.relatedTarget)) stopLog();
         });
 
+        // The tab itself says what the cluster is doing, so a pinned tab is worth
+        // a glance: the title carries the counts and the icon gets a dot, yellow
+        // while anything is running and blue while there is only a queue. Yellow
+        // rather than the page's orange, which would vanish against the orange
+        // sphere, and ringed in white so it holds up at sixteen pixels.
+        const baseTitle = document.title;
+        let iconSvg = null, iconState;
+        fetch('/static/icon.svg').then(r => r.text()).then(t => { iconSvg = t; }).catch(() => {});
+        const DOT = {running: '#f2c744', queued: '#4a90e2'};
+
+        function showActivity(data) {
+            const frames = Object.values(data.animation_groups || {})
+                .reduce((n, g) => n + g.active_frames.length, 0);
+            const busy = frames + (data.active_stills || []).length + (data.encoding_jobs || 0);
+            const queued = data.queued_jobs || 0;
+            const state = busy ? 'running' : (queued ? 'queued' : null);
+            document.title = busy ? `▶ ${busy} running · ${baseTitle}`
+                : queued ? `${queued} queued · ${baseTitle}` : baseTitle;
+            if (state === iconState || !iconSvg) return;
+            iconState = state;
+            const link = document.querySelector('link[rel="icon"][type="image/svg+xml"]');
+            link.href = state
+                ? 'data:image/svg+xml,' + encodeURIComponent(iconSvg.replace('</svg>',
+                    `<circle cx="48" cy="48" r="14" fill="${DOT[state]}" stroke="#fff" stroke-width="3.5"/></svg>`))
+                : '/static/icon.svg';
+        }
+
         const socket = io({transports: ['polling']});
         socket.on('connect', () => {
             document.getElementById('ws-indicator').classList.add('connected');
             document.getElementById('ws-text').innerText = "Live";
         });
+        // Said out loud rather than left showing "Live" over a page that has
+        // stopped updating.
+        socket.on('disconnect', () => {
+            document.getElementById('ws-indicator').classList.remove('connected');
+            document.getElementById('ws-text').innerText = "Reconnecting…";
+        });
 
         socket.on('stats', (data) => {
+            syncClock(data.now);
+            showActivity(data);
+            nudgeView();
             document.getElementById('queued-count').innerText = data.queued_jobs;
             document.getElementById('rendering-count').innerText = data.rendering_workers;
             document.getElementById('encoding-count').innerText = data.encoding_jobs;
@@ -598,13 +742,14 @@ See <https://www.gnu.org/licenses/> for details.
                         <div class="job-row">
                             <div class="job-header">
                                 <div class="job-info">
-                                    <div class="job-icon done"></div>
+                                    <span class="ico-slot"></span>
                                     <a class="thumb-link" download hidden><img class="thumb" loading="lazy"></a>
                                     <div class="job-details">
                                         <div class="job-name"></div>
                                         <div class="job-meta"></div>
                                     </div>
                                     <span class="state-tag" hidden><span class="dot"></span>Encoding</span>
+                                    <span class="elapsed"></span>
                                 </div>
                                 <button class="btn btn-danger">Delete</button>
                             </div>
@@ -613,13 +758,18 @@ See <https://www.gnu.org/licenses/> for details.
                                 <div class="encode-note"></div>
                             </div>
                         </div>`);
-                    node.querySelector('button').addEventListener('click', () => deleteJob(j.id));
+                    node.querySelector('button').addEventListener('click', e => deleteJob(j.id, e.currentTarget));
                     return node;
                 },
                 (node, j) => {
                     setText(node.querySelector('.job-name'), `Job ${j.id} - ${j.scene}`);
                     const encs = encodesByParent[String(j.id)] || [];
                     const enc = encs.length > 0;
+                    // A check once everything is done, a turning ring while an
+                    // encode still runs, counted from when the first pass began.
+                    setIcon(node.querySelector('.ico-slot'), enc ? 'running' : 'done', enc ? 'enc' : '');
+                    const since = enc ? Math.min(...encs.map(e => e.started || Infinity)) : null;
+                    setClock(node.querySelector('.elapsed'), Number.isFinite(since) ? since : null);
                     // The frames are done, but the job is not: saying Finished while
                     // its video is still being produced contradicts the badge and
                     // progress bar beside it.
@@ -647,7 +797,8 @@ See <https://www.gnu.org/licenses/> for details.
                         setAttr(del, 'title', 'Cannot delete while the encode is running');
                     } else {
                         strip.querySelector('.progress-bar-bg').classList.remove('indeterminate');
-                        del.disabled = false;
+                        // Not re-enabled under a delete already in flight.
+                        del.disabled = node.classList.contains('leaving');
                         del.removeAttribute('title');
                     }
 
@@ -670,13 +821,17 @@ See <https://www.gnu.org/licenses/> for details.
             const groups = Object.entries(data.animation_groups)
                 .map(([parentId, group]) => ({key: `g${parentId}`, type: 'animation', parentId, ...group}));
             const stills = (data.active_stills || [])
-                .map(s => ({key: `s${s.id}`, type: 'still', id: s.id, scene: s.scene, progress: s.progress}));
+                .map(s => ({key: `s${s.id}`, type: 'still', id: s.id, scene: s.scene, progress: s.progress,
+                            started: s.started}));
 
             // Encodes belong here too: an encode is active work, and its
             // animation has already left the groups by the time one starts.
             const encodes = (data.encodes || [])
                 .map(e => ({key: `e${e.id}`, type: 'encode', id: e.id, parentId: e.parent,
-                            scene: e.scene, progress: e.progress, node: e.node}));
+                            scene: e.scene, progress: e.progress, node: e.node,
+                            // The pass is what encodeStage names; without it every
+                            // card read "video and preview gif".
+                            stage: e.stage, started: e.started}));
 
             const activeRenders = [...stills, ...groups, ...encodes]
                 .filter(it => !activeFilter || itemState(it) === activeFilter);
@@ -685,7 +840,8 @@ See <https://www.gnu.org/licenses/> for details.
                 const node = el(`
                     <div class="group-card">
                         <div class="card-head">
-                            <div class="job-name"></div>
+                            <div class="head-title"><span class="ico-slot"></span><div class="job-name"></div></div>
+                            <span class="elapsed"></span>
                             <span class="state-tag" hidden><span class="dot"></span>Encoding</span>
                             <button class="btn btn-warn">Cancel</button>
                         </div>
@@ -701,19 +857,28 @@ See <https://www.gnu.org/licenses/> for details.
                     </div>`);
                 // An encode card cancels its animation, not just the ffmpeg row,
                 // so the parent does not sit in 'rendering' after the encode dies.
-                node.querySelector('button').addEventListener('click', () =>
-                    cancelJob(item.type === 'still' ? item.id : item.parentId));
+                node.querySelector('button').addEventListener('click', e =>
+                    cancelJob(item.type === 'still' ? item.id : item.parentId, e.currentTarget));
                 return node;
             }
 
             syncList(rendersDiv, activeRenders, item => item.key, createActiveCard,
                 (node, item) => {
+                    // The icon says whether it is turning (running), waiting its
+                    // turn (queued) or encoding, and the clock counts from
+                    // submission for an animation, which is exact, and from when
+                    // it was first seen running for the rest.
+                    const st = itemState(item);
+                    setIcon(node.querySelector('.ico-slot'), st === 'encoding' ? 'running' : st,
+                            st === 'encoding' ? 'enc' : '');
+                    setClock(node.querySelector('.elapsed'), item.type === 'animation' ? item.created : item.started);
+
                     if (item.type === 'encode') {
                         const percent = Math.round(item.progress);
                         node.classList.add('encoding');
                         node.querySelector('.state-tag').hidden = false;
                         setText(node.querySelector('.job-name'),
-                                `Job ${item.parentId}${item.scene ? ` - ${item.scene}` : ''}`);
+                                `Job ${item.parentId}${item.scene ? ` - ${baseName(item.scene)}` : ''}`);
                         setText(node.querySelector('.job-meta'), percent > 0
                                 ? `Encoding ${encodeStage(item)} — ${percent}%${item.node ? ` on ${item.node}` : ''}`
                                 : `Encoding ${encodeStage(item)}${item.node ? ` on ${item.node}` : ''}`);
@@ -735,7 +900,7 @@ See <https://www.gnu.org/licenses/> for details.
                     if (item.type === 'still') {
                         const percent = Math.round(item.progress);
                         setText(node.querySelector('.job-name'),
-                                `Job ${item.id}${item.scene ? ` - ${item.scene}` : ''}`);
+                                `Job ${item.id}${item.scene ? ` - ${baseName(item.scene)}` : ''}`);
                         setText(node.querySelector('.job-meta'), `Progress: ${percent}%`);
                         setWidth(node.querySelector('.progress-bar-fill'), percent);
                         node.querySelector('.preview').hidden = true;
@@ -748,7 +913,7 @@ See <https://www.gnu.org/licenses/> for details.
                         ? ` | ETA ${formatDuration(item.eta_seconds)} (~${arrivalTime(item.eta_seconds)})` : '';
 
                     setText(node.querySelector('.job-name'),
-                            `Job ${item.parentId}${item.scene_file ? ` - ${item.scene_file}` : ''}`);
+                            `Job ${item.parentId}${item.scene_file ? ` - ${baseName(item.scene_file)}` : ''}`);
                     setText(node.querySelector('.job-meta'),
                             `Overall Progress: ${item.frames_rendered} / ${item.total_frames} frames (${percent}%)${eta}`);
                     setWidth(node.querySelector('.progress-bar-fill'), percent);
@@ -774,7 +939,7 @@ See <https://www.gnu.org/licenses/> for details.
                                 <div class="progress-bar-bg">
                                     <div class="progress-bar-fill"></div>
                                 </div>
-                                <div class="frame-node"></div>
+                                <div class="frame-node"><span class="elapsed"></span><span class="node-name"></span></div>
                             </div>`),
                         (fnode, f) => {
                             // povray reports a percentage only once it is
@@ -795,7 +960,8 @@ See <https://www.gnu.org/licenses/> for details.
                             fnode.querySelector('.progress-bar-bg').classList.toggle('indeterminate', parsing);
                             fnode.classList.toggle('radiosity', radiosity);
                             if (!parsing) setWidth(fnode.querySelector('.progress-bar-fill'), f.progress);
-                            setText(fnode.querySelector('.frame-node'), f.node || '');
+                            setText(fnode.querySelector('.node-name'), f.node || '');
+                            setClock(fnode.querySelector('.elapsed'), f.started);
                             // The tile carries its job id so hovering can fetch
                             // that frame's output without wiring each new card.
                             if (fnode.dataset.jobId !== String(f.id)) fnode.dataset.jobId = String(f.id);
@@ -808,8 +974,8 @@ See <https://www.gnu.org/licenses/> for details.
         // --- Log tab ------------------------------------------------------
         // A timestamped feed of job events (submitted / rendering / completed /
         // failed / encoding / deleted), read from the job_events table the
-        // database fills by trigger. Polled only while the tab is visible, the
-        // same on-demand approach the frame-hover log uses.
+        // database fills by trigger. Fetched only while the tab is visible, and
+        // again on each push, the same on-demand approach the frame-hover log uses.
         const escapeHtml = s => String(s).replace(/[&<>"']/g,
             c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -855,7 +1021,7 @@ See <https://www.gnu.org/licenses/> for details.
         // renders it, the encodes that wait on every frame, and the files they
         // leave. The server says which boxes there are, where they sit and what
         // state each is in; this only draws them. Like the log it is polled only
-        // while its tab is showing.
+        // while its tab is showing, and then on each push rather than on a timer.
         const G = {w: 190, h: 48, gapX: 52, gapY: 16, pad: 10};
         const clip = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s;
 
@@ -883,8 +1049,10 @@ See <https://www.gnu.org/licenses/> for details.
                    transform="translate(${pos[n.id].x} ${pos[n.id].y})">
                     <title></title>
                     <rect class="box" width="${G.w}" height="${G.h}" rx="${n.kind === 'artifact' ? 14 : 6}"/>
-                    <text class="label" x="12" y="20"></text>
-                    <text class="sub" x="12" y="35"></text>
+                    <use class="gicon" href="#i-waiting" x="10" y="7" width="14" height="14"/>
+                    <text class="label" x="30" y="19"></text>
+                    <text class="time" x="${G.w - 10}" y="19" text-anchor="end"></text>
+                    <text class="sub" x="30" y="35"></text>
                     ${n.kind === 'step' ? `<rect class="bar-bg" x="12" y="${G.h - 9}" width="${G.w - 24}" height="3" rx="1.5"/>
                     <rect class="bar" x="12" y="${G.h - 9}" width="0" height="3" rx="1.5"/>` : ''}
                 </a>`).join('');
@@ -905,9 +1073,17 @@ See <https://www.gnu.org/licenses/> for details.
             for (const n of job.nodes) {
                 state[n.id] = n.state;
                 const g = svg.querySelector(`.gnode[data-id="${n.id}"]`);
+                const changed = g.dataset.state && g.dataset.state !== n.state;
                 setAttr(g, 'class', `gnode ${n.kind} st-${n.state}`);
-                setText(g.querySelector('.label'), clip(n.label, 24));
-                setText(g.querySelector('.sub'), clip(n.sub, 32));
+                if (changed) {
+                    g.classList.add('flash');
+                    setTimeout(() => g.classList.remove('flash'), 800);
+                }
+                g.dataset.state = n.state;
+                setAttr(g.querySelector('.gicon'), 'href', iconRef(n.state));
+                setClock(g.querySelector('.time'), n.started, n.took);
+                setText(g.querySelector('.label'), clip(n.label, 17));
+                setText(g.querySelector('.sub'), clip(n.sub, 27));
                 setText(g.querySelector('title'), n.title);
                 if (n.href) setAttr(g, 'href', n.href); else g.removeAttribute('href');
                 const bar = g.querySelector('.bar');
@@ -922,7 +1098,8 @@ See <https://www.gnu.org/licenses/> for details.
             return el(`
                 <div class="graph-card">
                     <div class="card-head">
-                        <div class="job-name"></div>
+                        <div class="head-title"><span class="ico-slot"></span><div class="job-name"></div></div>
+                        <span class="elapsed"></span>
                         <span class="state-tag"></span>
                     </div>
                     <div class="graph-scroll"></div>
@@ -931,6 +1108,8 @@ See <https://www.gnu.org/licenses/> for details.
 
         function updateGraphCard(node, job) {
             setText(node.querySelector('.job-name'), `Job ${job.id} - ${job.scene}`);
+            setIcon(node.querySelector('.ico-slot'), job.state);
+            setClock(node.querySelector('.elapsed'), job.started);
             const tag = node.querySelector('.state-tag');
             setText(tag, job.state);
             setAttr(tag, 'class', `state-tag st-${job.state}`);
@@ -958,7 +1137,8 @@ See <https://www.gnu.org/licenses/> for details.
                     err.hidden = false;
                     return;
                 }
-                const {jobs} = await res.json();
+                const {jobs, now} = await res.json();
+                syncClock(now);
                 err.hidden = true;
                 for (const [name, panel] of Object.entries(graphPanels)) {
                     const mine = jobs.filter(j => panel.states.includes(j.state));
@@ -972,14 +1152,39 @@ See <https://www.gnu.org/licenses/> for details.
             }
         }
 
-        // Each tab shows one view. A view that polls starts only while it is the
-        // one on screen, and stops the moment another is chosen.
+        // A refresh that is still in flight is not started again, so a slow
+        // response is never overtaken by the next one.
+        function single(fn) {
+            let busy = false;
+            return async () => {
+                if (busy) return;
+                busy = true;
+                try { await fn(); } finally { busy = false; }
+            };
+        }
+
+        // Each tab shows one view. The two that read their own endpoint refetch
+        // when the server pushes a change, which is when there is something new
+        // to see, instead of waiting out a timer: a job can go through all its
+        // steps in the time a poll takes to come round. The timer stays only as
+        // a slow backstop for a connection that has gone quiet, and min is the
+        // shortest gap between refetches when pushes arrive in a burst.
         const views = {
             renders: {id: 'renders-view'},
-            graph: {id: 'graph-view', refresh: refreshGraph, every: 2000},
-            log: {id: 'log-view', refresh: refreshEvents, every: 3000},
+            graph: {id: 'graph-view', refresh: single(refreshGraph), every: 10000, min: 400},
+            log: {id: 'log-view', refresh: single(refreshEvents), every: 10000, min: 1000},
         };
-        let viewTimer = null;
+        let currentView = 'renders', viewTimer = null, nudgeTimer = null, nudgedAt = 0;
+
+        function nudgeView() {
+            const view = views[currentView];
+            if (!view.refresh || nudgeTimer) return;
+            nudgeTimer = setTimeout(() => {
+                nudgeTimer = null;
+                nudgedAt = Date.now();
+                view.refresh();
+            }, Math.max(0, nudgedAt + view.min - Date.now()));
+        }
 
         document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
             document.querySelectorAll('.tab').forEach(t => {
@@ -988,9 +1193,11 @@ See <https://www.gnu.org/licenses/> for details.
                 t.setAttribute('aria-selected', on ? 'true' : 'false');
             });
             clearInterval(viewTimer);
-            viewTimer = null;
+            clearTimeout(nudgeTimer);
+            viewTimer = nudgeTimer = null;
+            currentView = tab.dataset.tab;
             for (const [name, view] of Object.entries(views)) {
-                const shown = name === tab.dataset.tab;
+                const shown = name === currentView;
                 document.getElementById(view.id).hidden = !shown;
                 if (shown && view.refresh) {
                     view.refresh();

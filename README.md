@@ -290,10 +290,23 @@ Socket.IO two to three times a second.
   the files they leave. Jobs are grouped as running, queued and finished. A box
   is coloured by state, a dashed one is waiting on an earlier step, and a file
   that exists is a link. The frames are a single box with a count however many
-  there are, since a finished frame's row is deleted. Unlike the other panels it
-  is not pushed: the page fetches `/graph` every two seconds, and only while
-  that tab is open. `GRAPH_FINISHED_LIMIT` (default 20) sets how many recently
-  finished jobs it reads.
+  there are, since a finished frame's row is deleted. It is not part of the
+  stats push: while that tab is open the page refetches `/graph` whenever a push
+  says something changed, so a step shows up within about half a second, with a
+  ten second timer behind it in case the connection goes quiet.
+  `GRAPH_FINISHED_LIMIT` (default 20) sets how many recently finished jobs it
+  reads. The Log tab refreshes the same way.
+- **Live status.** Each state has an icon, a ring that turns while work is in
+  progress, and running cards, frame tiles, encodes and graph steps carry an
+  elapsed clock that ticks every second. An animation counts from its
+  submission; everything else counts from when the dashboard first saw it
+  running, because a row records no start time of its own (`claimed_at` is a
+  lease refreshed every thirty seconds), so a dashboard restarted mid-render
+  counts those from the restart. The tab title carries the running or queued
+  count and the tab icon gets a dot, yellow while anything is running and blue
+  while there is only a queue. The indicator at the top right says
+  "Reconnecting…" if the connection drops, and Cancel and Delete acknowledge a
+  click at once instead of waiting for the next push.
 - **Cancel** stops a render and removes its partial output. **Delete** removes a
   job and everything rendered for it.
 
