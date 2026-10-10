@@ -1,0 +1,119 @@
+# An NFS server running inside the cluster, sharing everything on its volume.
+#
+# The Talos kernel has no nfsd, so this is NFS-Ganesha, a userspace server.
+# The image's stock config is what we want and is left untouched: it exports
+# the whole of /export as the NFSv4 pseudo-root (so clients mount "server:/"),
+# read-write, to every client, with no root squash. It speaks NFSv4 only, on
+# TCP 2049 and nothing else, which is why no rpcbind or mountd is needed.
+#
+# Mount it from anywhere on the LAN:
+#   mount -t nfs4 <EXTERNAL-IP>:/ /mnt
+# or from a pod / PV inside the cluster:
+#   nfs: { server: nfs-server.nfs.svc.cluster.local, path: / }
+# Note that kubelet mounts on the node, which does not use cluster DNS, so a PV
+# needs the LoadBalancer IP (or the Service's ClusterIP) rather than the name.
+#
+# Access is open to anyone who can reach the address, as is cube00's /nfs
+# export. The data lives on a Longhorn volume, so it sits on cube01-03.
+#
+# Ganesha's VFS backend resolves files by handle (open_by_handle_at), which
+# needs CAP_DAC_READ_SEARCH, plus CAP_CHOWN/FOWNER/etc. to act as arbitrary
+# uids, so the container runs privileged and the namespace is labelled to allow
+# that.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nfs
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-data
+  namespace: nfs
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-server
+  namespace: nfs
+spec:
+  replicas: 1
+  # The volume is ReadWriteOnce, so the old pod must release it before the new
+  # one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nfs-server
+  template:
+    metadata:
+      labels:
+        app: nfs-server
+    spec:
+      containers:
+        - name: nfs-server
+          image: docker.io/hectorm/nfs-ganesha:latest
+          # Ganesha finds the filesystem behind /export by reading /etc/mtab,
+          # which the image ships as a symlink to /proc/mounts but which
+          # containerd does not carry into the container. Without it the
+          # export fails with "setmntent(/etc/mtab): No such file" and the
+          # server exits. Recreate the link, then run the image's own command.
+          command:
+            - sh
+            - -c
+            - >-
+              ln -sf /proc/self/mounts /etc/mtab &&
+              exec /usr/bin/catatonit -- /usr/local/bin/ganesha.nfsd
+              -F -x -L /dev/stdout -f /etc/ganesha/ganesha.conf
+          ports:
+            - name: nfs
+              containerPort: 2049
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: data
+              mountPath: /export
+          # Ganesha sits in a 50s NFSv4 grace period after start, during which
+          # it accepts connections but only serves reclaims; the socket is up
+          # well before that, so this only checks the process is listening.
+          readinessProbe:
+            tcpSocket:
+              port: nfs
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: nfs
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: nfs-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nfs-server
+  namespace: nfs
+spec:
+  type: LoadBalancer
+  selector:
+    app: nfs-server
+  ports:
+    - name: nfs
+      port: 2049
+      targetPort: nfs
