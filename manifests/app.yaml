@@ -288,10 +288,26 @@ spec:
               # so the node still has room for
               # postgres, which needs a reservation of its own. Nodes have
               # 3950m allocatable and reserve roughly 1100m for system pods, so
-              # 2x1000m leaves about 850m for an 800m postgres request. No cpu
-              # limit is set, so povray's threads still use whatever is idle.
+              # 2x1000m leaves about 850m for an 800m postgres request.
               cpu: "700m"
               memory: "256Mi"
+            limits:
+              # Caps the fleet so it cannot starve the node. With no limit,
+              # povray's four threads per worker burst past the request, and 33
+              # workers pinned all twelve nodes at 100% CPU. Longhorn's CSI
+              # plugin, engine-image and instance-manager pods run on small
+              # requests, so they lost every contention; their health probes
+              # timed out, they crash-looped, and volumes could not be created
+              # or attached (the NFS server's PVC sat Pending for 10 minutes).
+              #
+              # Three workers per node at most (33 over 12 nodes, spread
+              # maxSkew 1) x 900m = 2700m of the ~3950m allocatable, leaving
+              # about 1250m for system pods, Longhorn and postgres. This gives
+              # back some of the idle-filling oversubscription described above:
+              # a worker can no longer borrow idle cores during its serial
+              # phases beyond 900m. Raise it if Longhorn stays healthy, and
+              # keep 3 x limit well under the node's allocatable CPU.
+              cpu: "900m"
       volumes:
         - name: output-storage
           persistentVolumeClaim:
